@@ -1,0 +1,116 @@
+"""Pydantic v2 models for all API input/output and internal flow params."""
+from __future__ import annotations
+
+from datetime import datetime, timezone
+from enum import Enum
+from typing import Optional
+
+from pydantic import BaseModel, ConfigDict, Field, computed_field
+
+
+class ReservationStatus(str, Enum):
+    pending = "pending"
+    locked = "locked"
+    failed = "failed"
+    cancelled = "cancelled"
+    expired = "expired"  # departure datetime passed — re-lock cycle stopped
+
+
+class ReservationRequest(BaseModel):
+    """POST /reservations body — every field optional, falls back to config."""
+
+    model_config = ConfigDict(extra="forbid")
+
+    origin_id: Optional[str] = Field(default=None, examples=["19058"])
+    destination_id: Optional[str] = Field(default=None, examples=["21787"])
+    date: Optional[str] = Field(default=None, examples=["2026-05-28"], description="yyyy-mm-dd")
+    departure: Optional[str] = Field(default=None, examples=["00:00"])
+    seat: Optional[str] = Field(default=None, examples=["00"])
+
+
+class RouteParams(BaseModel):
+    """Fully-resolved per-flow parameters (request merged with config defaults)."""
+
+    model_config = ConfigDict(frozen=True)
+
+    origin_id: str
+    destination_id: str
+    date: str
+    departure: str
+    seat: str
+    date_formatted: str
+    search_url: str
+
+
+class ReservationRecord(BaseModel):
+    """A single anonymous reservation attempt held in the in-memory store."""
+
+    id: str
+    origin_id: str
+    destination_id: str
+    date: str
+    departure: str
+    seat: str
+    status: ReservationStatus = ReservationStatus.pending
+    exit_code: Optional[int] = None
+    created_at: datetime
+    updated_at: datetime
+    error_msg: Optional[str] = None
+    # Absolute UTC departure datetime; set once the first lock succeeds and the
+    # trip resolves. Drives the scheduler's expiry decision.
+    departure_datetime: Optional[datetime] = None
+    # Incremented on each successful re-lock cycle.
+    relock_count: int = 0
+
+    @computed_field  # type: ignore[prop-decorator]
+    @property
+    def is_expired(self) -> bool:
+        """True once the bus has departed (departure_datetime is in the past)."""
+        if self.departure_datetime is None:
+            return False
+        return datetime.now(timezone.utc) >= self.departure_datetime
+
+
+class SeatInfo(BaseModel):
+    number: str
+    available: bool
+
+
+class SeatsResponse(BaseModel):
+    origin_id: str
+    destination_id: str
+    date: str
+    departure: str
+    total: int
+    available: int
+    seats: list[SeatInfo]
+
+
+class HealthResponse(BaseModel):
+    status: str
+    uptime_seconds: float
+    scheduler_next_run: Optional[datetime] = None
+
+
+class RelockJobInfo(BaseModel):
+    """Per-reservation re-lock job summary for /scheduler/status."""
+
+    reservation_id: str
+    next_run: Optional[datetime] = None
+    relock_count: int = 0
+    departure_datetime: Optional[datetime] = None
+    minutes_until_departure: Optional[float] = None
+
+
+class SchedulerStatusResponse(BaseModel):
+    running: bool
+    interval_minutes: int
+    next_run: Optional[datetime] = None  # global heartbeat job (kept for back-compat)
+    last_run: Optional[datetime] = None
+    last_exit_code: Optional[int] = None
+    global_next_run: Optional[datetime] = None
+    active_relock_jobs: list[RelockJobInfo] = Field(default_factory=list)
+
+
+class MessageResponse(BaseModel):
+    detail: str

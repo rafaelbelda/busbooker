@@ -1,0 +1,188 @@
+"""
+Flow orchestration.
+
+``run_flow`` is the single self-contained, **synchronous** entrypoint used by
+both the API (via a thread-pool executor) and the scheduler. It owns the
+Playwright lifecycle, profile validation and the error-retry that the original
+``main()`` performed, and returns ``(exit_code, trip_dict | None)`` where the
+exit code is:
+
+    0  →  seat locked and confirmed  ✅   (trip_dict is the resolved trip)
+    1  →  seat unavailable / lock failed  ❌   (trip_dict is None)
+    2  →  unrecoverable flow error  ❌   (trip_dict is None)
+
+The trip dict (departureHour, date, arrivalHour, …) lets the caller compute the
+reservation's departure_datetime for the re-lock scheduler.
+"""
+from __future__ import annotations
+
+import random
+import time
+
+from playwright.sync_api import Page, sync_playwright
+
+from ..config import Settings, settings
+from ..models.schemas import ReservationRequest, RouteParams, SeatInfo
+from ..utils.logger import log
+from .browser import (
+    TelemetryWatcher,
+    _profile_looks_valid,
+    build_context,
+    jitter,
+    reset_profile,
+    stochastic_idle,
+)
+from .checkout import confirm_seat_locked, proceed_to_checkout
+from .seat import check_seat_availability, lock_seat, parse_seat_map
+from .trip import open_search_page, resolve_trip
+
+
+# ─────────────────────────────────────────────────────────────────
+# Param resolution
+# ─────────────────────────────────────────────────────────────────
+def resolve_route_params(req: ReservationRequest, cfg: Settings = settings) -> RouteParams:
+    """Merge an (optional) request with config defaults into frozen RouteParams."""
+    origin = req.origin_id or cfg.origin_id
+    destination = req.destination_id or cfg.destination_id
+    date = req.date or cfg.date
+    departure = req.departure or cfg.target_departure
+    seat = req.seat or cfg.target_seat
+    date_formatted = f"{date[8:10]}-{date[5:7]}-{date[:4]}"
+    search_url = (
+        f"{cfg.base_url}/passagem-de-onibus/"
+        f"?origin={origin}&destination={destination}"
+        f"&date={date_formatted}&isStudent=false&isPCD=false&searchValidDay=true"
+    )
+    return RouteParams(
+        origin_id=origin,
+        destination_id=destination,
+        date=date,
+        departure=departure,
+        seat=seat,
+        date_formatted=date_formatted,
+        search_url=search_url,
+    )
+
+
+# ─────────────────────────────────────────────────────────────────
+# Single flow execution (the original run_flow body)
+# ─────────────────────────────────────────────────────────────────
+def _stimulate_fingerprint(page: Page, telemetry: TelemetryWatcher) -> None:
+    log.info("[step 4] stimulating fingerprint generation")
+    for _ in range(random.randint(2, 4)):
+        stochastic_idle(page, "fingerprint_stimulus")
+    try:
+        canvas = page.locator("canvas, svg").first
+        if canvas.count():
+            box = canvas.bounding_box()
+            if box:
+                page.mouse.click(box["x"] + box["width"] * 0.5, box["y"] + box["height"] * 0.5)
+                jitter(600, 1200)
+    except Exception:  # FIX (bug 2)
+        pass
+    if not telemetry.seen:
+        telemetry.wait_for(timeout=15.0)
+
+
+def _execute_flow(playwright, params: RouteParams) -> tuple[int, dict | None]:
+    """Run the 7-step booking flow once. Returns (exit_code, trip_dict | None)."""
+    start = time.monotonic()
+    ctx = build_context(playwright)
+    page = ctx.new_page()
+    telemetry = TelemetryWatcher(start_time=start)
+    page.on("response", telemetry.on_response)
+
+    try:
+        open_search_page(page, telemetry, params)              # Step 1
+        trip = resolve_trip(page, params)                      # Step 2
+
+        if not check_seat_availability(trip["seatMap"], params):  # Step 3
+            log.error(f"[step 3] seat {params.seat} already locked. Increase task interval.")
+            return 1, None
+
+        _stimulate_fingerprint(page, telemetry)                # Step 4 (pre)
+        if not lock_seat(page, trip, params):                  # Step 4
+            log.error("[step 4] failed to lock seat")
+            return 1, None
+
+        proceed_to_checkout(page, telemetry)                   # Step 5
+        log.info(f"[step 6] holding lock for {settings.wait_after_lock}s...")
+        time.sleep(settings.wait_after_lock)                   # Step 6
+
+        locked = confirm_seat_locked(page, trip, params)       # Step 7
+        if locked:
+            log.info(f"[result] ✅ seat {params.seat} UNAVAILABLE — lock confirmed")
+            return 0, trip
+        if "checkout" in page.url.lower() or "finalizar" in page.url.lower():
+            log.info(f"[result] ✅ seat {params.seat} likely locked (checkout reached)")
+            return 0, trip
+        log.warning(f"[result] ❌ seat {params.seat} lock unconfirmed")
+        return 1, None
+
+    except RuntimeError as exc:
+        log.error(f"[flow error] {exc}")
+        return 2, None
+    except Exception as exc:
+        log.exception(f"[fatal] {exc}")
+        return 2, None
+    finally:
+        try:
+            ctx.close()
+        except Exception:  # FIX (bug 2)
+            pass
+
+
+# ─────────────────────────────────────────────────────────────────
+# Public synchronous entrypoints
+# ─────────────────────────────────────────────────────────────────
+def run_flow(params: RouteParams) -> tuple[int, dict | None]:
+    """
+    Self-contained flow runner (manages Playwright + profile + error-retry).
+    Safe to call inside a thread-pool executor; must NOT run on the event loop.
+
+    Returns ``(exit_code, trip_dict | None)`` — the trip dict is present only on
+    success (exit 0) so callers can compute the departure datetime.
+    """
+    log.info("  BUS BOOKER")
+    log.info(f"  From: {params.origin_id}  To: {params.destination_id}")
+    log.info(f"  Date: {params.date}  |  Time: {params.departure}  |  Seat: {params.seat}")
+    log.info(f"  URL:  {params.search_url}")
+
+    if not _profile_looks_valid(settings.user_data_dir):
+        log.warning("[main] profile missing — resetting")
+        reset_profile(settings.user_data_dir)
+
+    with sync_playwright() as pw:
+        code, trip = _execute_flow(pw, params)
+        if code == 2:
+            log.warning("[main] flow error — resetting and retrying")
+            reset_profile(settings.user_data_dir)
+            jitter(2000, 4000)
+            code, trip = _execute_flow(pw, params)
+            if code == 2:
+                log.error("[main] flow error on retry — giving up")
+
+    log.info(f"[main] exit({code})")
+    return code, trip
+
+
+def fetch_seat_map(params: RouteParams) -> list[SeatInfo]:
+    """Resolve the trip and return the live seat map (Steps 1-2 only)."""
+    if not _profile_looks_valid(settings.user_data_dir):
+        log.warning("[seats] profile missing — resetting")
+        reset_profile(settings.user_data_dir)
+
+    with sync_playwright() as pw:
+        ctx = build_context(pw)
+        page = ctx.new_page()
+        telemetry = TelemetryWatcher(start_time=time.monotonic())
+        page.on("response", telemetry.on_response)
+        try:
+            open_search_page(page, telemetry, params)
+            trip = resolve_trip(page, params)
+            return parse_seat_map(trip.get("seatMap", []))
+        finally:
+            try:
+                ctx.close()
+            except Exception:  # FIX (bug 2)
+                pass

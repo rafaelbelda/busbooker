@@ -1,0 +1,17 @@
+# Virtual environments
+/venv
+.venv/
+.verify_venv/
+
+# Python
+__pycache__/
+*.py[cod]
+*.egg-info/
+
+# Local config & secrets
+.env
+
+# Runtime artifacts
+browser_profile/
+core/logs/*.log
+core/logs/*.log.*

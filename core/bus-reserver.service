@@ -1,0 +1,21 @@
+[Unit]
+Description=Bus Reserver (mobifacil.com.br seat locker)
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=simple
+# Adjust User/WorkingDirectory to your deployment.
+User=busreserver
+WorkingDirectory=/opt/bus-reserver
+# Use the venv that has the pinned requirements + `playwright install chromium`.
+Environment=PATH=/opt/bus-reserver/.venv/bin:/usr/bin:/bin
+# Override defaults from config.py here, or ship a .env in WorkingDirectory.
+# Environment=HEADLESS=false
+ExecStart=/usr/bin/env bash /opt/bus-reserver/core/start.sh
+Restart=on-failure
+RestartSec=10
+# start.sh already wraps uvicorn in xvfb-run when DISPLAY is absent.
+
+[Install]
+WantedBy=multi-user.target
