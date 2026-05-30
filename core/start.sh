@@ -15,6 +15,18 @@ cd "${ROOT_DIR}"
 
 UVICORN_CMD=(uvicorn core.main:app --host 127.0.0.1 --port 8771 --workers 1)
 
+# Ensure the Chromium binary Playwright drives is present. `pip install
+# playwright` only installs the library; the matching browser build must be
+# downloaded separately (and its build number changes when Playwright is
+# upgraded). This is a no-op once the correct build is cached, so it's safe to
+# run on every start and self-heals a fresh box or a Playwright bump.
+if command -v playwright >/dev/null 2>&1; then
+    echo "[start] ensuring Playwright Chromium is installed"
+    playwright install chromium
+else
+    echo "[start] WARNING: 'playwright' CLI not found; skipping browser install" >&2
+fi
+
 # Headed Chromium needs an X display. Skip entirely when HEADLESS is enabled.
 HEADLESS_LOWER="$(printf '%s' "${HEADLESS:-false}" | tr '[:upper:]' '[:lower:]')"
 

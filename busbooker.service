@@ -5,14 +5,17 @@ Wants=network-online.target
 
 [Service]
 Type=simple
-# Adjust User/WorkingDirectory to your deployment.
-User=busreserver
-WorkingDirectory=/home/bus-reserver
+User=root
+WorkingDirectory=/home/busbooker
+
 # Use the venv that has the pinned requirements + `playwright install chromium`.
-Environment=PATH=/home/bus-reserver/.venv/bin:/usr/bin:/bin
+
+Environment=PATH=/home/busbooker/venv/bin:/usr/bin:/bin
+
 # Override defaults from config.py here, or ship a .env in WorkingDirectory.
 # Environment=HEADLESS=false
-ExecStart=/usr/bin/env bash /home/bus-reserver/core/start.sh
+
+ExecStart=/usr/bin/env bash /home/busbooker/core/start.sh
 Restart=on-failure
 RestartSec=5
 # start.sh already wraps uvicorn in xvfb-run when DISPLAY is absent.

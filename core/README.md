@@ -1,4 +1,4 @@
-# Bus Reserver
+# BusBooker
 
 A production-ready FastAPI service that **locks a specific bus seat** on
 [mobifacil.com.br](https://mobifacil.com.br) by driving a real Chromium browser
@@ -160,24 +160,6 @@ logging for `/health`. TLS is left to the operator (e.g. certbot).
 
 **2. systemd service** — `core/bus-reserver.service`:
 
-```ini
-[Unit]
-Description=Bus Reserver (mobifacil.com.br seat locker)
-After=network-online.target
-Wants=network-online.target
-
-[Service]
-Type=simple
-User=busreserver
-WorkingDirectory=/opt/bus-reserver
-Environment=PATH=/opt/bus-reserver/.venv/bin:/usr/bin:/bin
-ExecStart=/usr/bin/env bash /opt/bus-reserver/core/start.sh
-Restart=on-failure
-RestartSec=10
-
-[Install]
-WantedBy=multi-user.target
-```
 
 ```bash
 sudo cp core/bus-reserver.service /etc/systemd/system/
