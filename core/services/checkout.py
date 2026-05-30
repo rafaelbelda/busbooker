@@ -49,7 +49,7 @@ def _confirm_via_content(page: Page, params: RouteParams) -> bool:
     ]
     for indicator in indicators:
         if indicator in page_content:
-            log.info(f"[step 7] ✅ found indicator: '{indicator}'")
+            log.info(f"[step 7] found indicator: '{indicator}'")
             return True
     return False
 
@@ -98,7 +98,7 @@ def confirm_seat_locked(page: Page, trip: dict, params: RouteParams) -> bool:
 
     # STRATEGY 1: on checkout → locked.
     if "checkout" in current_url or "finalizar" in current_url:
-        log.info("[step 7] ✅ on checkout page — lock confirmed by URL")
+        log.info("[step 7] on checkout page — lock confirmed by URL")
         return True
 
     # STRATEGY 2: page content indicators.

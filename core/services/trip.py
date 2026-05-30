@@ -275,3 +275,111 @@ def resolve_trip(page: Page, params: RouteParams) -> dict:
         log.warning(f"[step 2] {label}: intercept not captured")
 
     raise RuntimeError("Trip resolution failed after retry")
+
+
+# ─────────────────────────────────────────────────────────────────
+# URL search — resolve ALL trips for a route/date (used by POST /search)
+# ─────────────────────────────────────────────────────────────────
+def _seats_from_map(seat_map: list) -> list[dict]:
+    """Flatten a seatMap into [{numero, disponivel, posX, posY}, ...]."""
+    seats: list[dict] = []
+    for row in seat_map:
+        if not isinstance(row, list):
+            continue
+        for seat in row:
+            if not isinstance(seat, dict):
+                continue
+            numero = str(seat.get("numero", "")).strip()
+            if not numero or numero == "-99":
+                continue
+            try:
+                pos_x = float(seat.get("posX", 0) or 0)
+                pos_y = float(seat.get("posY", 0) or 0)
+            except (TypeError, ValueError):
+                pos_x = pos_y = 0.0
+            seats.append(
+                {
+                    "numero": numero,
+                    "disponivel": bool(seat.get("disponivel", False)),
+                    "posX": pos_x,
+                    "posY": pos_y,
+                }
+            )
+    return seats
+
+
+def _trip_to_search_dict(t: dict) -> dict:
+    sid = str(t.get("serviceId", "")).strip()
+    return {
+        "service_id": sid,
+        "departure": str(t.get("departureHour", "")).strip(),
+        "arrival": str(t.get("arrivalHour", "")).strip(),
+        "company": str(t.get("company", "")),
+        "price": str(t.get("price") or ""),
+        "service_class": str(t.get("serviceClass", "")),
+        "seats": _seats_from_map(t.get("seatMap", [])),
+    }
+
+
+def _parse_all_trips(data: dict) -> list[dict]:
+    """Extract every trip in a BusDetails response (no departure filtering)."""
+    if not data.get("success"):
+        return []
+    out: list[dict] = []
+    for t in data.get("details", {}).get("trip", []):
+        if isinstance(t, dict) and t.get("serviceId") is not None:
+            out.append(_trip_to_search_dict(t))
+    return out
+
+
+def resolve_all_trips(page: Page, params: RouteParams) -> list[dict]:
+    """
+    Enumerate every non-sold-out trip card on the already-loaded search page and
+    capture each one's BusDetails (incl. seatMap) by navigating to its details
+    URL. Reuses the BusDetails intercept rather than re-implementing the flow.
+    Returns trips de-duplicated by service_id.
+    """
+    collected: dict[str, dict] = {}
+
+    def on_response(response: Response) -> None:
+        if BUS_DETAILS_PATH not in response.url:
+            return
+        try:
+            data = response.json()
+        except Exception as exc:  # not all BusDetails hits are JSON
+            log.debug(f"[search] BusDetails parse skipped: {exc!r}")
+            return
+        for trip in _parse_all_trips(data):
+            sid = trip["service_id"]
+            if sid and sid not in collected:
+                collected[sid] = trip
+
+    page.on("response", on_response)
+    try:
+        # Collect every detail URL first — the DOM changes once we navigate away.
+        cards = page.locator(".listTripsCard")
+        urls: list[str] = []
+        for i in range(cards.count()):
+            card = cards.nth(i)
+            try:
+                if "soldOut" in (card.get_attribute("class") or ""):
+                    continue
+                url = card.get_attribute("data-urlbusdetails")
+                if url:
+                    urls.append(url if url.startswith("http") else settings.base_url + url)
+            except Exception as exc:
+                log.debug(f"[search] card {i} skipped: {exc!r}")
+        log.info(f"[search] {len(urls)} trip detail URLs to resolve")
+
+        for idx, url in enumerate(urls):
+            try:
+                page.goto(url, wait_until="networkidle", timeout=30_000)
+                page.wait_for_timeout(1500)
+                stochastic_idle(page, "search_detail")
+            except Exception as exc:
+                log.warning(f"[search] detail {idx} navigation failed: {exc!r}")
+    finally:
+        page.remove_listener("response", on_response)
+
+    log.info(f"[search] resolved {len(collected)} trips")
+    return list(collected.values())

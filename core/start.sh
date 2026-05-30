@@ -13,7 +13,7 @@ SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 ROOT_DIR="$(cd "${SCRIPT_DIR}/.." && pwd)"
 cd "${ROOT_DIR}"
 
-UVICORN_CMD=(uvicorn core.main:app --host 127.0.0.1 --port 8000 --workers 1)
+UVICORN_CMD=(uvicorn core.main:app --host 127.0.0.1 --port 8771 --workers 1)
 
 # Headed Chromium needs an X display. Skip entirely when HEADLESS is enabled.
 HEADLESS_LOWER="$(printf '%s' "${HEADLESS:-false}" | tr '[:upper:]' '[:lower:]')"

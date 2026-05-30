@@ -8,6 +8,8 @@ module-level constants.
 """
 from __future__ import annotations
 
+from typing import Optional
+
 from pydantic_settings import BaseSettings, SettingsConfigDict
 
 # ─────────────────────────────────────────────────────────────────
@@ -48,6 +50,11 @@ class Settings(BaseSettings):
     user_data_dir: str = "./browser_profile"
     headless: bool = False
 
+    # ---- admin ----
+    # HTTP Basic password for /admin/* (username is fixed "admin").
+    # Required, no default — see the startup check below.
+    admin_password: Optional[str] = None
+
     # ---- flow tuning ----
     max_retries: int = 1
     wait_after_lock: int = 60  # seconds the lock is held before confirmation
@@ -63,6 +70,14 @@ class Settings(BaseSettings):
 
 # Single shared settings instance imported across the codebase.
 settings = Settings()
+
+# ADMIN_PASSWORD is required and has no default — fail fast at startup (import
+# time) with a clear message rather than 500ing later on the first /admin call.
+if not settings.admin_password:
+    raise ValueError(
+        "ADMIN_PASSWORD is required and has no default. Set the ADMIN_PASSWORD "
+        "environment variable (or add it to .env) before starting the service."
+    )
 
 
 def get_settings() -> Settings:

@@ -4,7 +4,7 @@ FastAPI application entrypoint.
 Bootstraps a virtual X display (xvfb) for headed Chromium on Linux, configures
 the lifespan (start/stop the scheduler) and mounts the API router.
 
-Run via: ``uvicorn core.main:app --host 127.0.0.1 --port 8000 --workers 1``
+Run via: ``uvicorn core.main:app --host 127.0.0.1 --port 8771 --workers 1``
 (see core/start.sh, which also handles the xvfb wrapping for the whole process).
 """
 from __future__ import annotations
@@ -51,6 +51,7 @@ from contextlib import asynccontextmanager  # noqa: E402
 
 from fastapi import FastAPI  # noqa: E402
 
+from .api.admin import admin_router  # noqa: E402
 from .api.routes import router  # noqa: E402
 from .scheduler.jobs import shutdown_scheduler, start_scheduler  # noqa: E402
 
@@ -69,8 +70,9 @@ async def lifespan(app: FastAPI):
 
 app = FastAPI(
     title="Bus Reserver",
-    description="Browser-automation seat locking on mobifacil.com.br.",
+    description="busbooker.",
     version="7.0.0",
     lifespan=lifespan,
 )
 app.include_router(router)
+app.include_router(admin_router, prefix="/admin")

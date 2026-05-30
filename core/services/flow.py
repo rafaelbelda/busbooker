@@ -7,9 +7,9 @@ Playwright lifecycle, profile validation and the error-retry that the original
 ``main()`` performed, and returns ``(exit_code, trip_dict | None)`` where the
 exit code is:
 
-    0  →  seat locked and confirmed  ✅   (trip_dict is the resolved trip)
-    1  →  seat unavailable / lock failed  ❌   (trip_dict is None)
-    2  →  unrecoverable flow error  ❌   (trip_dict is None)
+    0  →  seat locked and confirmed   (trip_dict is the resolved trip)
+    1  →  seat unavailable / lock failed   (trip_dict is None)
+    2  →  unrecoverable flow error   (trip_dict is None)
 
 The trip dict (departureHour, date, arrivalHour, …) lets the caller compute the
 reservation's departure_datetime for the re-lock scheduler.
@@ -34,7 +34,7 @@ from .browser import (
 )
 from .checkout import confirm_seat_locked, proceed_to_checkout
 from .seat import check_seat_availability, lock_seat, parse_seat_map
-from .trip import open_search_page, resolve_trip
+from .trip import open_search_page, resolve_all_trips, resolve_trip
 
 
 # ─────────────────────────────────────────────────────────────────
@@ -59,6 +59,25 @@ def resolve_route_params(req: ReservationRequest, cfg: Settings = settings) -> R
         date=date,
         departure=departure,
         seat=seat,
+        date_formatted=date_formatted,
+        search_url=search_url,
+    )
+
+
+def resolve_search_params(
+    origin_id: str, destination_id: str, date: str, search_url: str
+) -> RouteParams:
+    """Frozen params for a URL search; navigates the user's exact URL.
+
+    ``departure`` / ``seat`` are unused for search (no specific seat).
+    """
+    date_formatted = f"{date[8:10]}-{date[5:7]}-{date[:4]}"
+    return RouteParams(
+        origin_id=origin_id,
+        destination_id=destination_id,
+        date=date,
+        departure="",
+        seat="",
         date_formatted=date_formatted,
         search_url=search_url,
     )
@@ -111,12 +130,12 @@ def _execute_flow(playwright, params: RouteParams) -> tuple[int, dict | None]:
 
         locked = confirm_seat_locked(page, trip, params)       # Step 7
         if locked:
-            log.info(f"[result] ✅ seat {params.seat} UNAVAILABLE — lock confirmed")
+            log.info(f"[result] seat {params.seat} UNAVAILABLE — lock confirmed")
             return 0, trip
         if "checkout" in page.url.lower() or "finalizar" in page.url.lower():
-            log.info(f"[result] ✅ seat {params.seat} likely locked (checkout reached)")
+            log.info(f"[result] seat {params.seat} likely locked (checkout reached)")
             return 0, trip
-        log.warning(f"[result] ❌ seat {params.seat} lock unconfirmed")
+        log.warning(f"[result] seat {params.seat} lock unconfirmed")
         return 1, None
 
     except RuntimeError as exc:
@@ -181,6 +200,27 @@ def fetch_seat_map(params: RouteParams) -> list[SeatInfo]:
             open_search_page(page, telemetry, params)
             trip = resolve_trip(page, params)
             return parse_seat_map(trip.get("seatMap", []))
+        finally:
+            try:
+                ctx.close()
+            except Exception:  # FIX (bug 2)
+                pass
+
+
+def search_trips(params: RouteParams) -> list[dict]:
+    """Open the search page and resolve every trip + its seats (used by /search)."""
+    if not _profile_looks_valid(settings.user_data_dir):
+        log.warning("[search] profile missing — resetting")
+        reset_profile(settings.user_data_dir)
+
+    with sync_playwright() as pw:
+        ctx = build_context(pw)
+        page = ctx.new_page()
+        telemetry = TelemetryWatcher(start_time=time.monotonic())
+        page.on("response", telemetry.on_response)
+        try:
+            open_search_page(page, telemetry, params)
+            return resolve_all_trips(page, params)
         finally:
             try:
                 ctx.close()

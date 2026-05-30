@@ -33,9 +33,9 @@ Exit codes returned by the flow map onto HTTP status codes:
 
 | Exit | Meaning                          | HTTP |
 |------|----------------------------------|------|
-| 0    | seat locked & confirmed ✅       | 201  |
-| 1    | seat unavailable / lock failed ❌ | 409  |
-| 2    | unrecoverable flow error ❌       | 500  |
+| 0    | seat locked & confirmed          | 201  |
+| 1    | seat unavailable / lock failed   | 409  |
+| 2    | unrecoverable flow error         | 500  |
 
 No database, no users, completely anonymous — reservations live in an in-memory
 store keyed by UUID.
@@ -133,10 +133,10 @@ bash core/start.sh
 and launches:
 
 ```bash
-uvicorn core.main:app --host 127.0.0.1 --port 8000 --workers 1
+uvicorn core.main:app --host 127.0.0.1 --port 8771 --workers 1
 ```
 
-Interactive API docs are then available at <http://127.0.0.1:8000/docs>.
+Interactive API docs are then available at <http://127.0.0.1:8771/docs>.
 
 > On Windows there is no `xvfb`; the app detects this and runs headed Chromium
 > directly. Set `HEADLESS=true` to run without a visible window anywhere.
@@ -153,7 +153,7 @@ sudo ln -s /etc/nginx/sites-available/bus-reserver /etc/nginx/sites-enabled/
 sudo nginx -t && sudo systemctl reload nginx
 ```
 
-The config proxies `:80 → 127.0.0.1:8000`, forwards `Host`, `X-Real-IP`,
+The config proxies `:80 → 127.0.0.1:8771`, forwards `Host`, `X-Real-IP`,
 `X-Forwarded-For`, `X-Forwarded-Proto`, gzips `application/json`, uses a 120 s
 read timeout (flows can take ~90 s) and a 10 s connect timeout, and skips access
 logging for `/health`. TLS is left to the operator (e.g. certbot).
@@ -192,12 +192,12 @@ Alternatively, run it inside a `screen`/`tmux` session: `bash core/start.sh`.
 
 ## Endpoint reference
 
-Base URL below assumes local dev (`http://127.0.0.1:8000`).
+Base URL below assumes local dev (`http://127.0.0.1:8771`).
 
 ### `GET /health`
 Liveness: status, uptime, scheduler next-run time.
 ```bash
-curl http://127.0.0.1:8000/health
+curl http://127.0.0.1:8771/health
 ```
 ```json
 { "status": "ok", "uptime_seconds": 42.1, "scheduler_next_run": "2026-05-30T18:21:00+00:00" }
@@ -208,7 +208,7 @@ Fetch the live seat map for the configured route (re-uses trip resolution —
 drives the browser, so it is serialised with reservations). All query params are
 optional and fall back to config.
 ```bash
-curl "http://127.0.0.1:8000/seats?seat=00"
+curl "http://127.0.0.1:8771/seats?seat=00"
 ```
 ```json
 {
@@ -219,10 +219,40 @@ curl "http://127.0.0.1:8000/seats?seat=00"
 }
 ```
 
+### `POST /search`
+Given a URL the user copied from mobifacil after browsing a route, resolve every
+trip for that route/date **with its seat map**. Validates the URL (must be a
+`mobifacil.com.br` `passagem-de-onibus` link) and converts the `dd-mm-yyyy` date
+to `yyyy-mm-dd` internally. Drives the browser (serialised with reservations).
+```bash
+curl -X POST http://127.0.0.1:8771/search \
+  -H 'Content-Type: application/json' \
+  -d '{ "url": "https://mobifacil.com.br/passagem-de-onibus/sao-paulo-todos-sp/araraquara-sp?origin=-3&destination=19052&date=30-05-2026&isStudent=false&isPCD=false&searchValidDay=true" }'
+```
+```json
+{
+  "origin_id": "-3", "destination_id": "19052", "date": "2026-05-30",
+  "trips": [
+    {
+      "service_id": "12345", "departure": "08:00", "arrival": "11:30",
+      "company": "Empresa X", "price": "130.55", "service_class": "Executivo",
+      "seats": [ { "numero": "01", "disponivel": true, "posX": 40.0, "posY": 20.0 } ]
+    }
+  ]
+}
+```
+Returns **422** if the URL is not a valid mobifacil search URL. Resolving seats
+for every trip means one BusDetails browser fetch per trip, so this can take a
+while on routes with many departures.
+
+> Search seats use the raw mobifacil field names (`numero`, `disponivel`,
+> `posX`, `posY`) — distinct from `/seats`, which keeps its `number`/`available`
+> shape.
+
 ### `POST /reservations`
 Trigger a full lock flow (blocking, up to ~90 s). Body fields are all optional.
 ```bash
-curl -X POST http://127.0.0.1:8000/reservations \
+curl -X POST http://127.0.0.1:8771/reservations \
   -H 'Content-Type: application/json' \
   -d '{ "origin_id": "19058", "destination_id": "21787", "date": "2026-05-28", "departure": "00:00", "seat": "00" }'
 ```
@@ -243,18 +273,18 @@ On success a per-reservation re-lock job is registered (see **Persistent re-lock
 ### `GET /reservations/{id}`
 Includes `relock_count`, `departure_datetime` (UTC), and the computed `is_expired`.
 ```bash
-curl http://127.0.0.1:8000/reservations/f1c2...   # 200 or 404
+curl http://127.0.0.1:8771/reservations/f1c2...   # 200 or 404
 ```
 
 ### `DELETE /reservations/{id}`
 Cancel / forget a reservation. Also cancels its re-lock job so it won't fire again.
 ```bash
-curl -X DELETE http://127.0.0.1:8000/reservations/f1c2...   # 200 or 404
+curl -X DELETE http://127.0.0.1:8771/reservations/f1c2...   # 200 or 404
 ```
 
 ### `GET /scheduler/status`
 ```bash
-curl http://127.0.0.1:8000/scheduler/status
+curl http://127.0.0.1:8771/scheduler/status
 ```
 ```json
 {
@@ -290,6 +320,7 @@ heartbeat job; `active_relock_jobs` lists each reservation's own cycle.)
 | `BASE_URL`           | `https://mobifacil.com.br`  | Site base URL.                                           |
 | `USER_DATA_DIR`      | `./browser_profile`         | Persistent Chromium profile directory.                   |
 | `HEADLESS`           | `false`                     | Run Chromium headless (skips xvfb).                      |
+| `ADMIN_PASSWORD`     | **(required, no default)**  | HTTP Basic password for `/admin/*` (username `admin`). Startup fails if unset. |
 | `MAX_RETRIES`        | `1`                         | Attempts for retry-wrapped browser steps.                |
 | `WAIT_AFTER_LOCK`    | `60`                        | Seconds the lock is held before confirmation.            |
 | `SCHEDULER_INTERVAL` | `21`                        | Minutes between scheduled flows.                         |
@@ -343,6 +374,51 @@ Inspect every active cycle (next run, relock count, minutes until departure) via
 > Note on `status` values: `pending` → `locked` (held) ↔ `failed` (soft-fail, still
 > retrying), and the terminal `cancelled` (user `DELETE`) / `expired` (departure
 > passed). Only `cancelled` and `expired` stop a re-lock cycle.
+
+---
+
+## Admin panel
+
+All `/admin/*` routes require **HTTP Basic Auth** — username `admin`, password
+from the `ADMIN_PASSWORD` env var (required; the service refuses to start without
+it). Credentials are compared with `secrets.compare_digest`. A bad or missing
+credential returns **401** with a `WWW-Authenticate: Basic` header.
+
+```bash
+curl -u admin:"$ADMIN_PASSWORD" http://127.0.0.1:8771/admin/stats
+```
+
+| Method | Path                       | Description                                                        |
+|--------|----------------------------|--------------------------------------------------------------------|
+| GET    | /admin/reservations        | List every reservation (full records).                             |
+| GET    | /admin/reservations/{id}   | One reservation, or 404.                                           |
+| DELETE | /admin/reservations/{id}   | Force-cancel any reservation: sets `cancelled`, stops its re-lock job, keeps the record. |
+| GET    | /admin/scheduler           | Scheduler status (next_run, last_run, last_exit_code, interval).   |
+| POST   | /admin/scheduler/pause     | Pause the global heartbeat job (per-reservation re-locks keep running). |
+| POST   | /admin/scheduler/resume    | Resume the global heartbeat job.                                   |
+| GET    | /admin/stats               | Counts: total, pending, locked, failed, cancelled, expired.        |
+| POST   | /admin/shutdown            | Graceful shutdown (see below).                                     |
+
+```json
+// GET /admin/stats
+{ "total": 5, "pending": 0, "locked": 2, "failed": 1, "cancelled": 1, "expired": 1 }
+```
+
+### `POST /admin/shutdown`
+
+Refuses with **409** if any reservation is still `pending` or `locked`:
+```json
+{ "error": "active_reservations", "count": 2, "message": "Cannot shut down: 2 reservation(s) still active." }
+```
+Otherwise responds **200** `{ "status": "shutting_down" }` and, after a 1-second
+delay (a FastAPI `BackgroundTasks` job, so the response is delivered first), sends
+`SIGTERM` to its own pid so systemd can stop/restart it cleanly. The trigger is
+logged at WARNING.
+
+> **systemd restart tip:** a clean `SIGTERM` is not a failure, so
+> `Restart=on-failure` will **not** bring the service back after
+> `/admin/shutdown`. Use `Restart=always` in the unit if you want it to
+> auto-restart (e.g. to recycle the browser profile) after an admin shutdown.
 
 ---
 

@@ -114,3 +114,59 @@ class SchedulerStatusResponse(BaseModel):
 
 class MessageResponse(BaseModel):
     detail: str
+
+
+# ─────────────────────────────────────────────────────────────────
+# URL-based search (POST /search)
+# ─────────────────────────────────────────────────────────────────
+class SearchRequest(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
+    url: str = Field(
+        examples=[
+            "https://mobifacil.com.br/passagem-de-onibus/sao-paulo-todos-sp/araraquara-sp"
+            "?origin=-3&destination=19052&date=30-05-2026&isStudent=false&isPCD=false&searchValidDay=true"
+        ]
+    )
+
+
+class TripSeat(BaseModel):
+    """A seat as returned by /search (raw mobifacil seatMap field names).
+
+    Distinct from ``SeatInfo`` (used by /seats), which keeps its existing
+    ``number``/``available`` shape.
+    """
+
+    numero: str
+    disponivel: bool
+    posX: float = 0.0
+    posY: float = 0.0
+
+
+class TripResult(BaseModel):
+    service_id: str
+    departure: str
+    arrival: str
+    company: str
+    price: str
+    service_class: str
+    seats: list[TripSeat] = Field(default_factory=list)
+
+
+class SearchResponse(BaseModel):
+    origin_id: str
+    destination_id: str
+    date: str
+    trips: list[TripResult] = Field(default_factory=list)
+
+
+# ─────────────────────────────────────────────────────────────────
+# Admin
+# ─────────────────────────────────────────────────────────────────
+class AdminStats(BaseModel):
+    total: int
+    pending: int
+    locked: int
+    failed: int
+    cancelled: int
+    expired: int

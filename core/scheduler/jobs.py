@@ -222,6 +222,28 @@ def next_run_time() -> Optional[datetime]:
     return job.next_run_time if job else None
 
 
+def pause_global_job() -> Optional[datetime]:
+    """Pause the global heartbeat job. Per-reservation re-locks keep running."""
+    if scheduler.running:
+        try:
+            scheduler.pause_job(_JOB_ID)
+            log.warning("[scheduler] global heartbeat paused")
+        except JobLookupError:
+            pass
+    return next_run_time()  # None once paused
+
+
+def resume_global_job() -> Optional[datetime]:
+    """Resume the global heartbeat job."""
+    if scheduler.running:
+        try:
+            scheduler.resume_job(_JOB_ID)
+            log.info("[scheduler] global heartbeat resumed")
+        except JobLookupError:
+            pass
+    return next_run_time()
+
+
 def scheduler_status() -> dict:
     global_next = next_run_time()
     return {

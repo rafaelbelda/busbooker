@@ -22,8 +22,8 @@ def _force_utf8(stream) -> None:
     """
     Make a console stream tolerate non-ASCII log output.
 
-    The format separator (—) and status glyphs (→ ✅ ❌) are non-ASCII; on a
-    non-UTF-8 console (e.g. Windows cp1252) the StreamHandler would raise
+    The format separator (—) and arrow glyph (→) are non-ASCII; on a non-UTF-8
+    console (e.g. Windows cp1252) the StreamHandler would raise
     UnicodeEncodeError on every line. Reconfigure to UTF-8 with replacement.
     """
     try:
