@@ -7,7 +7,7 @@
 #   nginx -t && systemctl reload nginx
 # ─────────────────────────────────────────────────────────────────
 
-upstream bus_reserver {
+upstream busbooker {
     server 127.0.0.1:8771;
     keepalive 16;
 }
@@ -29,10 +29,10 @@ server {
 
     location = /health {
         access_log off;
-        proxy_pass http://bus_reserver;
+        proxy_pass http://busbooker;
     }
 
     location / {
-        proxy_pass http://bus_reserver;
+        proxy_pass http://busbooker;
     }
 }

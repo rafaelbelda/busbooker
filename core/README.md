@@ -416,7 +416,7 @@ guards protect them (see `core/utils/ratelimit.py`):
 >     allow 100.64.0.0/10;   # Tailscale
 >     allow 127.0.0.1;       # same-origin frontend behind this nginx
 >     deny all;
->     proxy_pass http://bus_reserver;
+>     proxy_pass http://busbooker;
 > }
 > ```
 >

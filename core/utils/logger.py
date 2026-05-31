@@ -1,7 +1,7 @@
 """
 Structured logging for the whole service.
 
-Single logger named ``bus_reserver`` writing to stdout, stderr and a rotating
+Single logger named ``busbooker`` writing to stdout, stderr and a rotating
 file. All service modules do ``from ..utils.logger import log``.
 """
 from __future__ import annotations
@@ -13,7 +13,7 @@ from pathlib import Path
 
 from ..config import settings
 
-_LOGGER_NAME = "bus_reserver"
+_LOGGER_NAME = "busbooker"
 _FORMAT = "%(asctime)s [%(levelname)s] %(name)s — %(message)s"
 _DATEFMT = "%Y-%m-%d %H:%M:%S"
 
