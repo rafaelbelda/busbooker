@@ -7,7 +7,7 @@ from typing import Optional
 from urllib.parse import parse_qs, urlparse
 from uuid import uuid4
 
-from fastapi import APIRouter, HTTPException, Query, Response
+from fastapi import APIRouter, HTTPException, Query, Request, Response
 
 from ..models.schemas import (
     HealthResponse,
@@ -21,6 +21,9 @@ from ..models.schemas import (
     SearchResponse,
     SeatsResponse,
     TripResult,
+    validate_date,
+    validate_departure,
+    validate_nonempty,
 )
 from ..scheduler.jobs import (
     cancel_relock,
@@ -37,9 +40,16 @@ from ..services.flow import (
 )
 from ..state import FLOW_LOCK, store, uptime_seconds
 from ..utils.logger import log
+from ..utils.net import client_info
 from ..utils.time_utils import compute_departure_datetime
 
 router = APIRouter()
+
+
+def _client(request: Request) -> str:
+    """Client identity string for audit logs (reuses what the middleware stashed)."""
+    info = getattr(request.state, "client", None) or client_info(request)
+    return info.log_str()
 
 # exit code → (reservation status, HTTP status, error message)
 _EXIT_STATUS = {0: ReservationStatus.locked, 1: ReservationStatus.failed, 2: ReservationStatus.failed}
@@ -71,6 +81,13 @@ async def get_seats(
 ) -> SeatsResponse:
     # All route values are required query params — there are no server defaults.
     # Seat-map reads are not seat-specific, so no seat is needed here.
+    try:
+        origin_id = validate_nonempty(origin_id, "origin_id")
+        destination_id = validate_nonempty(destination_id, "destination_id")
+        date = validate_date(date)
+        departure = validate_departure(departure)
+    except ValueError as exc:
+        raise HTTPException(status_code=422, detail=str(exc)) from exc
     params = resolve_route_params(
         origin_id=origin_id,
         destination_id=destination_id,
@@ -83,7 +100,8 @@ async def get_seats(
             seats = await loop.run_in_executor(None, fetch_seat_map, params)
     except Exception as exc:
         log.exception(f"[/seats] failed: {exc!r}")
-        raise HTTPException(status_code=500, detail=f"seat map fetch failed: {exc}") from exc
+        # Generic detail to the client; full exception stays in the server log.
+        raise HTTPException(status_code=500, detail="seat map fetch failed") from exc
 
     return SeatsResponse(
         origin_id=params.origin_id,
@@ -145,7 +163,8 @@ async def search(req: SearchRequest) -> SearchResponse:
             trips_raw = await loop.run_in_executor(None, search_trips, params)
     except Exception as exc:
         log.exception(f"[/search] failed: {exc!r}")
-        raise HTTPException(status_code=500, detail=f"search failed: {exc}") from exc
+        # Generic detail to the client; full exception stays in the server log.
+        raise HTTPException(status_code=500, detail="search failed") from exc
 
     return SearchResponse(
         origin_id=parsed["origin"],
@@ -159,7 +178,9 @@ async def search(req: SearchRequest) -> SearchResponse:
 # Reservations
 # ─────────────────────────────────────────────────────────────────
 @router.post("/reservations", response_model=ReservationRecord, status_code=201)
-async def create_reservation(req: ReservationRequest, response: Response) -> ReservationRecord:
+async def create_reservation(
+    req: ReservationRequest, request: Request, response: Response
+) -> ReservationRecord:
     params = resolve_route_params(
         origin_id=req.origin_id,
         destination_id=req.destination_id,
@@ -180,15 +201,22 @@ async def create_reservation(req: ReservationRequest, response: Response) -> Res
         updated_at=now,
     )
     await store.add(record)
+    log.info(
+        f"[audit] reservation create id={record.id} "
+        f"route={params.origin_id}->{params.destination_id} date={params.date} "
+        f"departure={params.departure} seat={params.seat} {_client(request)}"
+    )
 
     loop = asyncio.get_running_loop()
     try:
         async with FLOW_LOCK:  # run_flow is blocking sync Playwright → executor
             code, trip = await loop.run_in_executor(None, run_flow, params)
     except Exception as exc:
-        log.exception(f"[/reservations] flow raised: {exc!r}")
+        # Full detail to the log; the client gets a generic message (no internals).
+        log.exception(f"[/reservations] id={record.id} flow raised: {exc!r}")
         response.status_code = 500
-        return await _finalise(record.id, 2, error_override=str(exc))
+        updated = await _finalise(record.id, 2)
+        return await _terminal_or(record.id, updated, response)
 
     # On a successful first lock, record the absolute departure datetime and
     # register the per-reservation re-lock cycle.
@@ -198,26 +226,56 @@ async def create_reservation(req: ReservationRequest, response: Response) -> Res
 
     response.status_code = _EXIT_HTTP.get(code, 500)
     updated = await _finalise(record.id, code, departure_dt=departure_dt)
+    if updated is None:
+        # Reservation was cancelled/deleted while the flow ran — never resurrect
+        # it or schedule a re-lock for a seat the user no longer wants.
+        return await _terminal_or(record.id, updated, response)
+
     if code == 0:
         schedule_relock(record.id)
+        log.info(f"[audit] reservation locked id={record.id} — re-lock scheduled {_client(request)}")
+    else:
+        log.info(
+            f"[audit] reservation outcome id={record.id} "
+            f"status={updated.status.value} exit={code} {_client(request)}"
+        )
     return updated
 
 
 async def _finalise(
     record_id: str,
     code: int,
-    error_override: Optional[str] = None,
     departure_dt: Optional[datetime] = None,
-) -> ReservationRecord:
+) -> Optional[ReservationRecord]:
+    """Apply the flow outcome — but never revert a reservation that became
+    terminal (cancelled/expired) or was deleted while the flow ran.
+
+    Returns the updated record, or ``None`` if it is gone / already terminal.
+    """
     status = _EXIT_STATUS.get(code, ReservationStatus.failed)
-    error = error_override if error_override is not None else _EXIT_ERR.get(code)
-    fields: dict[str, object] = {"status": status, "exit_code": code, "error_msg": error}
+    fields: dict[str, object] = {
+        "status": status,
+        "exit_code": code,
+        "error_msg": _EXIT_ERR.get(code),
+    }
     if departure_dt is not None:
         fields["departure_datetime"] = departure_dt
-    updated = await store.update(record_id, **fields)
-    if updated is None:  # should never happen — record was just created
-        raise HTTPException(status_code=500, detail="reservation vanished mid-flow")
-    return updated
+    return await store.update(record_id, only_if_active=True, **fields)
+
+
+async def _terminal_or(
+    record_id: str, updated: Optional[ReservationRecord], response: Response
+) -> ReservationRecord:
+    """Handle the race where a record went terminal/gone during the flow."""
+    if updated is not None:
+        return updated
+    response.status_code = 409
+    current = await store.get(record_id)
+    if current is None:
+        log.warning(f"[audit] reservation {record_id} deleted during flow — outcome discarded")
+        raise HTTPException(status_code=409, detail="reservation was cancelled during processing")
+    log.warning(f"[audit] reservation {record_id} cancelled during flow — outcome discarded")
+    return current
 
 
 @router.get("/reservations/{reservation_id}", response_model=ReservationRecord)
@@ -229,11 +287,12 @@ async def get_reservation(reservation_id: str) -> ReservationRecord:
 
 
 @router.delete("/reservations/{reservation_id}", response_model=MessageResponse)
-async def delete_reservation(reservation_id: str) -> MessageResponse:
+async def delete_reservation(reservation_id: str, request: Request) -> MessageResponse:
     # Stop the re-lock job first so it cannot fire on a deleted id.
     cancel_relock(reservation_id)
     if not await store.delete(reservation_id):
         raise HTTPException(status_code=404, detail="reservation not found")
+    log.info(f"[audit] reservation delete id={reservation_id} {_client(request)}")
     return MessageResponse(detail=f"reservation {reservation_id} cancelled")
 
 

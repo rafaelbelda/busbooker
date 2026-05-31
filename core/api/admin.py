@@ -13,7 +13,7 @@ import signal
 import time
 from collections import Counter
 
-from fastapi import APIRouter, BackgroundTasks, Depends, HTTPException
+from fastapi import APIRouter, BackgroundTasks, Depends, HTTPException, Request
 from fastapi.responses import JSONResponse
 from fastapi.security import HTTPBasic, HTTPBasicCredentials
 
@@ -22,21 +22,40 @@ from ..models.schemas import AdminStats, ReservationRecord, ReservationStatus
 from ..scheduler.jobs import cancel_relock, scheduler_status
 from ..state import store
 from ..utils.logger import log
+from ..utils.net import client_info
 
 _ADMIN_USER = "admin"
 _security = HTTPBasic()
 
 
-def require_admin(credentials: HTTPBasicCredentials = Depends(_security)) -> str:
-    """Constant-time Basic Auth check. Raises 401 (+ WWW-Authenticate) on failure."""
+def _client(request: Request) -> str:
+    """Client identity string for audit logs (reuses what the middleware stashed)."""
+    info = getattr(request.state, "client", None) or client_info(request)
+    return info.log_str()
+
+
+def require_admin(
+    request: Request,
+    credentials: HTTPBasicCredentials = Depends(_security),
+) -> str:
+    """Constant-time Basic Auth check. Raises 401 (+ WWW-Authenticate) on failure.
+
+    Every admin access attempt is logged and attributable: failures at WARNING
+    (so brute-force / probing is visible in the log), successes at INFO.
+    """
     user_ok = secrets.compare_digest(credentials.username, _ADMIN_USER)
     pass_ok = secrets.compare_digest(credentials.password, settings.admin_password or "")
     if not (user_ok and pass_ok):
+        log.warning(
+            f"[admin] AUTH FAILURE user={credentials.username!r} "
+            f"path={request.url.path} {_client(request)}"
+        )
         raise HTTPException(
             status_code=401,
             detail="invalid credentials",
             headers={"WWW-Authenticate": "Basic"},
         )
+    log.info(f"[admin] access path={request.url.path} {_client(request)}")
     return credentials.username
 
 
@@ -61,7 +80,7 @@ async def admin_get_reservation(reservation_id: str) -> ReservationRecord:
 
 
 @admin_router.delete("/reservations/{reservation_id}", response_model=ReservationRecord)
-async def admin_force_cancel(reservation_id: str) -> ReservationRecord:
+async def admin_force_cancel(reservation_id: str, request: Request) -> ReservationRecord:
     """Force-cancel any reservation regardless of status (keeps the record)."""
     record = await store.get(reservation_id)
     if record is None:
@@ -72,6 +91,7 @@ async def admin_force_cancel(reservation_id: str) -> ReservationRecord:
         status=ReservationStatus.cancelled,
         error_msg="force-cancelled by admin",
     )
+    log.warning(f"[audit] admin force-cancel reservation={reservation_id} {_client(request)}")
     return updated if updated is not None else record
 
 
@@ -112,7 +132,7 @@ def _delayed_sigterm() -> None:
 
 
 @admin_router.post("/shutdown")
-async def admin_shutdown(background_tasks: BackgroundTasks):
+async def admin_shutdown(request: Request, background_tasks: BackgroundTasks):
     """Refuse if any reservation is active; otherwise SIGTERM self after 1s."""
     records = await store.list()
     active = [
@@ -120,6 +140,10 @@ async def admin_shutdown(background_tasks: BackgroundTasks):
         if r.status in (ReservationStatus.pending, ReservationStatus.locked)
     ]
     if active:
+        log.warning(
+            f"[audit] admin shutdown REFUSED — {len(active)} active reservation(s) "
+            f"{_client(request)}"
+        )
         return JSONResponse(
             status_code=409,
             content={
@@ -128,6 +152,6 @@ async def admin_shutdown(background_tasks: BackgroundTasks):
                 "message": f"Cannot shut down: {len(active)} reservation(s) still active.",
             },
         )
-    log.warning("admin triggered graceful shutdown — no active reservations")
+    log.warning(f"[audit] admin shutdown triggered — no active reservations {_client(request)}")
     background_tasks.add_task(_delayed_sigterm)
     return {"status": "shutting_down"}

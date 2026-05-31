@@ -92,30 +92,48 @@ async def _relock_job(reservation_id: str) -> None:
 
     if code == 0:
         # (4) Success — relock_count++ and back to locked.
-        await store.update(
+        updated = await store.update(
             reservation_id,
+            only_if_active=True,
             status=ReservationStatus.locked,
             exit_code=0,
             error_msg=None,
             relock_count=n,
         )
+        if updated is None:
+            # Cancelled/expired/deleted while this re-lock ran — don't resurrect.
+            log.info(
+                f"scheduler: re-lock #{n} for {reservation_id} completed but record is "
+                "terminal/gone — outcome discarded, job removed"
+            )
+            cancel_relock(reservation_id)
+            return
         log.info(
             f"scheduler: re-lock #{n} OK — seat {record.seat} locked, "
             f"next run in {settings.scheduler_interval} min"
         )
     elif code == 1:
         # (5) Soft fail (seat unavailable) — keep retrying.
-        await store.update(
+        updated = await store.update(
             reservation_id,
+            only_if_active=True,
             status=ReservationStatus.failed,
             exit_code=1,
             error_msg="seat unavailable or lock failed",
         )
+        if updated is None:
+            log.info(
+                f"scheduler: re-lock #{n} soft-fail but {reservation_id} terminal/gone "
+                "— job removed"
+            )
+            cancel_relock(reservation_id)
+            return
         log.warning(f"scheduler: re-lock #{n} seat {record.seat} unavailable — will retry")
     else:
         # (6) Hard fail — stop retrying.
         await store.update(
             reservation_id,
+            only_if_active=True,
             status=ReservationStatus.failed,
             exit_code=2,
             error_msg="unrecoverable flow error",

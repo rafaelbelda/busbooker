@@ -51,7 +51,7 @@ store keyed by UUID.
 ## Architecture
 
 ```
-                              HTTP (nginx :80, gzip JSON, 120s read timeout)
+                              HTTP (nginx :80, 120s read timeout)
                                          │
                                          ▼
    ┌───────────────────────────────────────────────────────────────┐
@@ -155,27 +155,27 @@ Interactive API docs are then available at <http://127.0.0.1:8771/docs>.
 
 ## How to deploy (nginx + systemd)
 
-**1. nginx reverse proxy**
+**1. nginx reverse proxy** — the config ships as `busbooker` in the repo root:
 
 ```bash
-sudo cp core/nginx.conf /etc/nginx/sites-available/bus-reserver
-sudo ln -s /etc/nginx/sites-available/bus-reserver /etc/nginx/sites-enabled/
+sudo cp busbooker /etc/nginx/sites-available/busbooker
+sudo ln -s /etc/nginx/sites-available/busbooker /etc/nginx/sites-enabled/
 sudo nginx -t && sudo systemctl reload nginx
 ```
 
 The config proxies `:80 → 127.0.0.1:8771`, forwards `Host`, `X-Real-IP`,
-`X-Forwarded-For`, `X-Forwarded-Proto`, gzips `application/json`, uses a 120 s
-read timeout (flows can take ~90 s) and a 10 s connect timeout, and skips access
-logging for `/health`. TLS is left to the operator (e.g. certbot).
+`X-Forwarded-For`, `X-Forwarded-Proto` (the app honours `X-Real-IP` /
+`X-Forwarded-For` for client-IP logging — see **Logging & traceability**), uses a
+120 s read timeout (flows can take ~90 s) and a 10 s connect timeout, and skips
+access logging for `/health`. TLS is left to the operator (e.g. certbot).
 
-**2. systemd service** — `core/bus-reserver.service`:
-
+**2. systemd service** — the unit ships as `busbooker.service` in the repo root:
 
 ```bash
-sudo cp core/bus-reserver.service /etc/systemd/system/
+sudo cp busbooker.service /etc/systemd/system/
 sudo systemctl daemon-reload
-sudo systemctl enable --now bus-reserver
-sudo journalctl -u bus-reserver -f      # follow logs
+sudo systemctl enable --now busbooker
+sudo journalctl -u busbooker -f         # follow logs
 ```
 
 Alternatively, run it inside a `screen`/`tmux` session: `bash core/start.sh`.
@@ -317,6 +317,7 @@ departure and seat are always supplied per request.
 | `MAX_RETRIES`        | `1`                         | Attempts for retry-wrapped browser steps.                |
 | `WAIT_AFTER_LOCK`    | `60`                        | Seconds the lock is held before confirmation.            |
 | `SCHEDULER_INTERVAL` | `21`                        | Minutes between a reservation's re-lock attempts.        |
+| `TRUSTED_PROXIES`    | `""` (loopback only)        | Extra proxy IPs/CIDRs whose `X-Real-IP`/`X-Forwarded-For` are trusted for client-IP logging. Loopback is always trusted. |
 | `LOG_FILE`           | `core/logs/app.log`         | Rotating log file path.                                  |
 | `LOG_MAX_BYTES`      | `5242880`                   | Max size per log file before rotation (5 MiB).           |
 | `LOG_BACKUP_COUNT`   | `3`                         | Rotated log files to keep.                               |
@@ -361,6 +362,39 @@ Inspect every active cycle (next run, relock count, minutes until departure) via
 > Note on `status` values: `pending` → `locked` (held) ↔ `failed` (soft-fail, still
 > retrying), and the terminal `cancelled` (user `DELETE`) / `expired` (departure
 > passed). Only `cancelled` and `expired` stop a re-lock cycle.
+
+---
+
+## Logging & traceability
+
+Every request emits one structured line via an access-log middleware, and every
+state-changing action is attributable:
+
+```
+[req]   POST /reservations -> 201 ip=203.0.113.9 via=proxy peer=127.0.0.1 ua="…" dur=874ms
+[audit] reservation create id=f1c2… route=19058->21787 date=2026-05-28 departure=00:00 seat=00 ip=203.0.113.9 …
+[audit] reservation locked id=f1c2… — re-lock scheduled …
+[admin] AUTH FAILURE user='admin' path=/admin/stats ip=203.0.113.9 via=proxy peer=127.0.0.1
+[admin] access path=/admin/stats ip=203.0.113.9 …
+```
+
+Audited events include reservation create / outcome / delete, admin force-cancel,
+admin shutdown, **admin auth success and failure**, scheduler re-lock executions,
+and any unhandled exception (logged with traceback by the middleware).
+
+**Client IP resolution (proxy-aware).** The app trusts `X-Real-IP` /
+`X-Forwarded-For` **only** when the immediate TCP peer is a trusted proxy
+(loopback by default — i.e. the nginx in front — plus any `TRUSTED_PROXIES`
+CIDRs). It prefers the unspoofable `X-Real-IP` nginx sets and never the
+client-controllable left-most `X-Forwarded-For` entry, so a public client cannot
+forge the IP it is logged as. Tailnet addresses (`100.64.0.0/10`) are tagged
+`(tailscale)`. A direct (non-proxied) client is logged by its real peer address.
+`uvicorn`'s own `--proxy-headers` is intentionally **not** enabled so `peer`
+always reflects the true TCP source.
+
+Logs go to stdout (DEBUG–WARNING), stderr (ERROR+) and a rotating file
+(`LOG_FILE`, all levels). `/health` request lines are logged at DEBUG to keep the
+operational signal clean under constant liveness polling.
 
 ---
 

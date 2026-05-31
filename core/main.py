@@ -47,13 +47,16 @@ _bootstrap_xvfb()
 
 # Imports below intentionally follow the xvfb bootstrap so a re-exec happens
 # before the heavier modules (Playwright, APScheduler) are imported.
+import logging  # noqa: E402
+import time  # noqa: E402
 from contextlib import asynccontextmanager  # noqa: E402
 
-from fastapi import FastAPI  # noqa: E402
+from fastapi import FastAPI, Request  # noqa: E402
 
 from .api.admin import admin_router  # noqa: E402
 from .api.routes import router  # noqa: E402
 from .scheduler.jobs import shutdown_scheduler, start_scheduler  # noqa: E402
+from .utils.net import client_info  # noqa: E402
 
 
 @asynccontextmanager
@@ -70,9 +73,45 @@ async def lifespan(app: FastAPI):
 
 app = FastAPI(
     title="BusBooker",
-    description="busbooker.",
+    description="Reservation-driven bus-seat locker for mobifacil.com.br.",
     version="7.0.0",
     lifespan=lifespan,
 )
+
+
+@app.middleware("http")
+async def access_log(request: Request, call_next):
+    """One structured log line per request: who, what, outcome, latency.
+
+    Resolves the client identity once and stashes it on ``request.state`` so
+    downstream handlers (admin auth, reservation audit lines) attribute actions
+    to the same IP without re-parsing headers.
+    """
+    info = client_info(request)
+    request.state.client = info
+    start = time.monotonic()
+    method, path = request.method, request.url.path
+    try:
+        response = await call_next(request)
+    except Exception:
+        dur_ms = (time.monotonic() - start) * 1000
+        # Unhandled error escaping the app — make it loud and attributable.
+        log.exception(
+            f"[req] {method} {path} -> 500 EXC {info.log_str()} dur={dur_ms:.0f}ms"
+        )
+        raise
+    dur_ms = (time.monotonic() - start) * 1000
+    # /health is polled constantly (load balancers, uptime checks) — keep it at
+    # DEBUG so it doesn't drown the operational signal.
+    level = logging.DEBUG if path == "/health" else logging.INFO
+    ua = (info.user_agent or "-")[:120]
+    log.log(
+        level,
+        f'[req] {method} {path} -> {response.status_code} '
+        f'{info.log_str()} ua="{ua}" dur={dur_ms:.0f}ms',
+    )
+    return response
+
+
 app.include_router(router)
 app.include_router(admin_router, prefix="/admin")

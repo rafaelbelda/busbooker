@@ -5,7 +5,38 @@ from datetime import datetime, timezone
 from enum import Enum
 from typing import Optional
 
-from pydantic import BaseModel, ConfigDict, Field, computed_field
+from pydantic import BaseModel, ConfigDict, Field, computed_field, field_validator
+
+
+# ─────────────────────────────────────────────────────────────────
+# Shared route-field validators (used by ReservationRequest and /seats)
+# ─────────────────────────────────────────────────────────────────
+def validate_nonempty(value: str, field: str) -> str:
+    value = value.strip()
+    if not value:
+        raise ValueError(f"{field} must not be empty")
+    return value
+
+
+def validate_date(value: str) -> str:
+    """Require a real ``yyyy-mm-dd`` date (rejects garbage that would otherwise
+    be sliced into a malformed search URL)."""
+    value = value.strip()
+    try:
+        datetime.strptime(value, "%Y-%m-%d")
+    except ValueError as exc:
+        raise ValueError("date must be a valid yyyy-mm-dd date") from exc
+    return value
+
+
+def validate_departure(value: str) -> str:
+    """Require a 24h ``HH:MM`` time."""
+    value = value.strip()
+    try:
+        datetime.strptime(value, "%H:%M")
+    except ValueError as exc:
+        raise ValueError("departure must be HH:MM (24-hour)") from exc
+    return value
 
 
 class ReservationStatus(str, Enum):
@@ -28,8 +59,23 @@ class ReservationRequest(BaseModel):
     origin_id: str = Field(examples=["19058"])
     destination_id: str = Field(examples=["21787"])
     date: str = Field(examples=["2026-05-28"], description="yyyy-mm-dd")
-    departure: str = Field(examples=["00:00"])
+    departure: str = Field(examples=["00:00"], description="HH:MM (24-hour)")
     seat: str = Field(examples=["00"])
+
+    @field_validator("origin_id", "destination_id", "seat")
+    @classmethod
+    def _nonempty(cls, v: str, info) -> str:
+        return validate_nonempty(v, info.field_name)
+
+    @field_validator("date")
+    @classmethod
+    def _date(cls, v: str) -> str:
+        return validate_date(v)
+
+    @field_validator("departure")
+    @classmethod
+    def _departure(cls, v: str) -> str:
+        return validate_departure(v)
 
 
 class RouteParams(BaseModel):

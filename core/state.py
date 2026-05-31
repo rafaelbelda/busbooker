@@ -14,9 +14,13 @@ from typing import Optional
 
 from .models.schemas import ReservationRecord, ReservationStatus
 
-# Monotonic-ish process start, used for the /health uptime figure.
-START_WALL: datetime = datetime.now(timezone.utc)
+# Monotonic process start, used for the /health uptime figure.
 START_MONOTONIC: float = time.monotonic()
+
+# Statuses past which a record must never be silently reverted (see
+# ``update(only_if_active=...)``). Reaching one of these is a deliberate,
+# terminal decision (user/admin cancel, departure expiry).
+_TERMINAL_STATUSES = (ReservationStatus.cancelled, ReservationStatus.expired)
 
 # Serialises every browser flow (single shared persistent profile / single worker).
 FLOW_LOCK: asyncio.Lock = asyncio.Lock()
@@ -42,29 +46,29 @@ class ReservationStore:
         async with self._lock:
             return self._items.get(reservation_id)
 
-    async def update(self, reservation_id: str, **fields: object) -> Optional[ReservationRecord]:
+    async def update(
+        self,
+        reservation_id: str,
+        *,
+        only_if_active: bool = False,
+        **fields: object,
+    ) -> Optional[ReservationRecord]:
+        """Patch a record. Returns the updated record, or ``None`` if it is gone.
+
+        When ``only_if_active`` is set, a record that has already reached a
+        terminal status (cancelled/expired) is left untouched and ``None`` is
+        returned. This prevents a long-running browser flow from resurrecting a
+        reservation that was cancelled or expired *while the flow was running*.
+        """
         async with self._lock:
             record = self._items.get(reservation_id)
             if record is None:
                 return None
+            if only_if_active and record.status in _TERMINAL_STATUSES:
+                return None
             updated = record.model_copy(update={**fields, "updated_at": _now()})
             self._items[reservation_id] = updated
             return updated
-
-    async def set_status(
-        self,
-        reservation_id: str,
-        status: ReservationStatus,
-        *,
-        exit_code: Optional[int] = None,
-        error_msg: Optional[str] = None,
-    ) -> Optional[ReservationRecord]:
-        return await self.update(
-            reservation_id,
-            status=status,
-            exit_code=exit_code,
-            error_msg=error_msg,
-        )
 
     async def delete(self, reservation_id: str) -> bool:
         async with self._lock:

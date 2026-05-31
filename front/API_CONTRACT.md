@@ -274,7 +274,9 @@ next fire time.)
   `mobifacil.com.br` `passagem-de-onibus` URLs are accepted (else 422).
 - `GET /seats` — **required** query params `origin_id`, `destination_id`, `date`
   (`yyyy-mm-dd`), `departure` (`HH:MM`). No `seat` param (a seat-map read is not
-  seat-specific); no defaults — omitting any is a 422.
+  seat-specific); no defaults — omitting any is a 422. `date` and `departure` are
+  format-validated (a `{ "detail": "<string>" }` 422 on a bad value). The same
+  format validation applies to `POST /reservations` fields (array-shaped 422).
 
 ---
 

@@ -49,6 +49,13 @@ class Settings(BaseSettings):
     # ---- scheduler ----
     scheduler_interval: int = 21  # minutes
 
+    # ---- request traceability ----
+    # Comma-separated IPs/CIDRs of reverse proxies whose forwarded headers
+    # (X-Real-IP / X-Forwarded-For) we trust. Loopback is always trusted, so the
+    # default nginx-on-localhost setup needs nothing here. Set this only if a
+    # proxy reaches the app from a non-loopback address.
+    trusted_proxies: str = ""
+
     # ---- logging ----
     log_file: str = "core/logs/app.log"
     log_max_bytes: int = 5_242_880

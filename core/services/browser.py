@@ -12,7 +12,7 @@ import random
 import shutil
 import time
 from pathlib import Path
-from typing import Callable, Optional, Tuple, TypeVar
+from typing import Callable, Optional, TypeVar
 
 from playwright.sync_api import BrowserContext, Page, Response
 
