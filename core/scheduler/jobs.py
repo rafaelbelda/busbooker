@@ -179,6 +179,29 @@ def list_relock_jobs() -> list[tuple[str, Optional[datetime]]]:
     return out
 
 
+async def rehydrate_relocks() -> None:
+    """Re-arm re-lock jobs for reservations restored from disk on startup.
+
+    Only reservations that actually had a live re-lock cycle are rescheduled: a
+    record is a candidate iff it is ``locked``/``failed`` (soft-fail keeps
+    retrying) *and* has a future ``departure_datetime`` (set only once a seat
+    first locked). Records that never locked, or whose departure already passed,
+    are skipped — ``store.load`` has already expired the latter.
+    """
+    now = datetime.now(timezone.utc)
+    count = 0
+    for rec in await store.list():
+        if (
+            rec.status in (ReservationStatus.locked, ReservationStatus.failed)
+            and rec.departure_datetime is not None
+            and now < rec.departure_datetime
+        ):
+            schedule_relock(rec.id)
+            count += 1
+    if count:
+        log.info(f"scheduler: rehydrated {count} re-lock job(s) from persisted reservations")
+
+
 # ─────────────────────────────────────────────────────────────────
 # Lifecycle / status
 # ─────────────────────────────────────────────────────────────────

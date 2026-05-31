@@ -55,7 +55,12 @@ from fastapi import FastAPI, Request  # noqa: E402
 
 from .api.admin import admin_router  # noqa: E402
 from .api.routes import router  # noqa: E402
-from .scheduler.jobs import shutdown_scheduler, start_scheduler  # noqa: E402
+from .scheduler.jobs import (  # noqa: E402
+    rehydrate_relocks,
+    shutdown_scheduler,
+    start_scheduler,
+)
+from .state import store  # noqa: E402
 from .utils.net import client_info  # noqa: E402
 
 
@@ -63,6 +68,10 @@ from .utils.net import client_info  # noqa: E402
 async def lifespan(app: FastAPI):
     log.info("[lifespan] starting bus-reserver service")
     start_scheduler()
+    # Restore persisted reservations, then re-arm their re-lock jobs so a restart
+    # doesn't silently drop seats that are still being held.
+    await store.load()
+    await rehydrate_relocks()
     try:
         yield
     finally:

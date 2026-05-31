@@ -43,8 +43,9 @@ Exit codes returned by the flow map onto HTTP status codes:
 | 1    | seat unavailable / lock failed   | 409  |
 | 2    | unrecoverable flow error         | 500  |
 
-No database, no users, completely anonymous — reservations live in an in-memory
-store keyed by UUID.
+No users, completely anonymous — reservations are keyed by UUID and held in an
+in-memory store backed by a small SQLite file, so they (and their re-lock jobs)
+survive a restart. See **Persistence & restart recovery**.
 
 ---
 
@@ -317,6 +318,9 @@ departure and seat are always supplied per request.
 | `MAX_RETRIES`        | `1`                         | Attempts for retry-wrapped browser steps.                |
 | `WAIT_AFTER_LOCK`    | `60`                        | Seconds the lock is held before confirmation.            |
 | `SCHEDULER_INTERVAL` | `21`                        | Minutes between a reservation's re-lock attempts.        |
+| `RESERVATION_DB`     | `core/data/reservations.db` | SQLite file for durable reservations. `:memory:` disables persistence. |
+| `RATE_LIMIT_PER_MIN` | `0` (disabled)              | Per-client-IP request cap/min on the browser endpoints (`/seats`, `/search`, `/reservations`). `0` = off. |
+| `MAX_FLOW_QUEUE`     | `8`                         | Max concurrent (queued + running) browser requests before new ones get a fast `503`. `0` = off. |
 | `TRUSTED_PROXIES`    | `""` (loopback only)        | Extra proxy IPs/CIDRs whose `X-Real-IP`/`X-Forwarded-For` are trusted for client-IP logging. Loopback is always trusted. |
 | `LOG_FILE`           | `core/logs/app.log`         | Rotating log file path.                                  |
 | `LOG_MAX_BYTES`      | `5242880`                   | Max size per log file before rotation (5 MiB).           |
@@ -362,6 +366,63 @@ Inspect every active cycle (next run, relock count, minutes until departure) via
 > Note on `status` values: `pending` → `locked` (held) ↔ `failed` (soft-fail, still
 > retrying), and the terminal `cancelled` (user `DELETE`) / `expired` (departure
 > passed). Only `cancelled` and `expired` stop a re-lock cycle.
+
+---
+
+## Persistence & restart recovery
+
+Reservations are written through to a SQLite file (`RESERVATION_DB`) on every
+change, so a restart, deploy or crash no longer silently drops a seat that is
+still being held. Each record is stored as its JSON (one `data` column), so the
+schema never needs migrating when the model changes. WAL + `synchronous=NORMAL`
+keep the inline writes cheap and crash-safe.
+
+On startup the service restores every record and **reconciles state lost to the
+downtime**, then re-arms the re-lock cycles:
+
+- A `pending` record (its flow died with the old process) → `failed`
+  (`"interrupted by restart"`).
+- A `locked`/`failed` record whose departure already passed during downtime →
+  `expired`.
+- Every still-active reservation with a future departure gets its
+  `relock_<id>` job re-registered, so locks keep being held seamlessly.
+
+A single unreadable row is logged and skipped rather than blocking startup. Set
+`RESERVATION_DB=:memory:` to opt out of durability (e.g. in tests).
+
+---
+
+## Abuse protection
+
+The browser-driven endpoints (`/seats`, `/search`, `/reservations`) are the
+expensive, serialised ones. Two independent, **off-by-default-where-risky**
+guards protect them (see `core/utils/ratelimit.py`):
+
+- **Global queue cap** (`MAX_FLOW_QUEUE`, default `8`) — once that many browser
+  requests are queued/running, new ones get an immediate `503` (`Retry-After: 30`)
+  instead of piling up behind the single browser and hammering mobifacil. Enabled
+  by default because a buggy frontend retry-loop can self-DoS just like an
+  attacker.
+- **Per-IP rate limit** (`RATE_LIMIT_PER_MIN`, default `0` = off) — a per-client
+  fixed-window cap returning `429` (`Retry-After: 60`). Client IPs come from the
+  trusted-proxy-aware resolver, so they can't be spoofed past nginx.
+
+> **Deployment note (tailnet today, maybe public later).** The lightest real
+> protection right now is to keep these three paths on the tailnet at the nginx
+> layer — no app overhead:
+>
+> ```nginx
+> location ~ ^/(seats|search|reservations)$ {
+>     allow 100.64.0.0/10;   # Tailscale
+>     allow 127.0.0.1;       # same-origin frontend behind this nginx
+>     deny all;
+>     proxy_pass http://bus_reserver;
+> }
+> ```
+>
+> When you open a public version, set `RATE_LIMIT_PER_MIN` (and keep
+> `MAX_FLOW_QUEUE`) — the per-IP limit should cover `POST /reservations` too, so a
+> public abuser can't slow-drip junk reservations into the store/scheduler.
 
 ---
 

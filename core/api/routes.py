@@ -7,7 +7,7 @@ from typing import Optional
 from urllib.parse import parse_qs, urlparse
 from uuid import uuid4
 
-from fastapi import APIRouter, HTTPException, Query, Request, Response
+from fastapi import APIRouter, Depends, HTTPException, Query, Request, Response
 
 from ..models.schemas import (
     HealthResponse,
@@ -41,6 +41,7 @@ from ..services.flow import (
 from ..state import FLOW_LOCK, store, uptime_seconds
 from ..utils.logger import log
 from ..utils.net import client_info
+from ..utils.ratelimit import browser_guard
 from ..utils.time_utils import compute_departure_datetime
 
 router = APIRouter()
@@ -72,7 +73,7 @@ async def health() -> HealthResponse:
 # ─────────────────────────────────────────────────────────────────
 # Live seat map
 # ─────────────────────────────────────────────────────────────────
-@router.get("/seats", response_model=SeatsResponse)
+@router.get("/seats", response_model=SeatsResponse, dependencies=[Depends(browser_guard)])
 async def get_seats(
     origin_id: str = Query(),
     destination_id: str = Query(),
@@ -153,7 +154,7 @@ def _parse_search_url(url: str) -> dict:
     }
 
 
-@router.post("/search", response_model=SearchResponse)
+@router.post("/search", response_model=SearchResponse, dependencies=[Depends(browser_guard)])
 async def search(req: SearchRequest) -> SearchResponse:
     parsed = _parse_search_url(req.url)
     params = resolve_search_params(parsed["origin"], parsed["destination"], parsed["date"], req.url)
@@ -177,7 +178,12 @@ async def search(req: SearchRequest) -> SearchResponse:
 # ─────────────────────────────────────────────────────────────────
 # Reservations
 # ─────────────────────────────────────────────────────────────────
-@router.post("/reservations", response_model=ReservationRecord, status_code=201)
+@router.post(
+    "/reservations",
+    response_model=ReservationRecord,
+    status_code=201,
+    dependencies=[Depends(browser_guard)],
+)
 async def create_reservation(
     req: ReservationRequest, request: Request, response: Response
 ) -> ReservationRecord:

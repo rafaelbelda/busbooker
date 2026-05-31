@@ -32,10 +32,13 @@ These will break the UI if ignored. They are not optional.
    either (a) serve the frontend **same-origin** behind the same nginx (preferred),
    or (b) ask the backend team to add `CORSMiddleware` for your origin. See §2.
 
-3. **State is in-memory and non-persistent.** Reservations live in RAM. A server
-   restart, deploy, crash, or `POST /admin/shutdown` **wipes all reservations and
-   their re-lock jobs**. Reservation IDs are **not durable** — never treat them as
-   permanent. The UI must tolerate a reservation simply disappearing.
+3. **State persists across restarts.** Reservations are stored in SQLite and
+   restored on startup, with their re-lock jobs re-armed. A restart/deploy/crash
+   no longer wipes them — but reconciliation may change a status: a reservation
+   that was `pending` at restart becomes `failed` ("interrupted by restart"), and
+   one whose departure passed during downtime becomes `expired`. The UI should
+   still tolerate a record disappearing (admin/user delete) and a status changing
+   between polls.
 
 4. **Times are UTC, ISO-8601.** Every datetime field (`created_at`, `updated_at`,
    `departure_datetime`, `next_run`, …) is UTC with offset (e.g.
@@ -95,9 +98,15 @@ base64. **Serve over HTTPS** so they aren't exposed.
 - One browser flow runs at a time (server-side global lock). If the user triggers
   a second browser-bound call (`/search`, `/reservations`, `/seats`) while one is
   running, it **waits its turn** — the request just takes longer.
+- **Back-pressure:** too many browser-bound calls queued at once get a fast
+  **503** (`Retry-After: 30`) instead of queueing forever (`MAX_FLOW_QUEUE`). If
+  per-IP rate limiting is enabled server-side, excess calls get **429**
+  (`Retry-After: 60`). Treat both as "try again shortly", honour `Retry-After`,
+  and never auto-retry tightly.
 - The UI should **serialize browser-bound actions**: disable the relevant buttons
   and show a "working…" state until the in-flight call returns. Avoid firing
-  `/search` and `/reservations` simultaneously.
+  `/search` and `/reservations` simultaneously — this also keeps you clear of the
+  503/429 limits.
 - Read-only endpoints (`/health`, `/scheduler/status`, `GET /reservations/{id}`,
   all non-mutating `/admin/*` reads) are fast and safe to call any time, including
   while a browser flow runs.

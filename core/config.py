@@ -49,6 +49,19 @@ class Settings(BaseSettings):
     # ---- scheduler ----
     scheduler_interval: int = 21  # minutes
 
+    # ---- persistence ----
+    # SQLite file holding reservations so they (and their re-lock jobs) survive a
+    # restart. Use ":memory:" to disable durability (e.g. in tests).
+    reservation_db: str = "core/data/reservations.db"
+
+    # ---- abuse protection (matters once the browser endpoints face the public) ----
+    # Per-client-IP request cap per minute on the browser-driven endpoints
+    # (/seats, /search, /reservations). 0 disables it (default — tailnet-only).
+    rate_limit_per_min: int = 0
+    # Max concurrent (queued + running) browser-bound requests before new ones get
+    # a fast 503 instead of piling up behind the single browser. 0 disables it.
+    max_flow_queue: int = 8
+
     # ---- request traceability ----
     # Comma-separated IPs/CIDRs of reverse proxies whose forwarded headers
     # (X-Real-IP / X-Forwarded-For) we trust. Loopback is always trusted, so the

@@ -12,7 +12,10 @@ import time
 from datetime import datetime, timezone
 from typing import Optional
 
+from .config import settings
 from .models.schemas import ReservationRecord, ReservationStatus
+from .persistence import ReservationDB
+from .utils.logger import log
 
 # Monotonic process start, used for the /health uptime figure.
 START_MONOTONIC: float = time.monotonic()
@@ -31,15 +34,22 @@ def _now() -> datetime:
 
 
 class ReservationStore:
-    """UUID-keyed reservation store protected by a single asyncio lock."""
+    """UUID-keyed reservation store protected by a single asyncio lock.
 
-    def __init__(self) -> None:
+    When a ``ReservationDB`` is attached, every mutation is written through to
+    SQLite so reservations survive a restart; ``load()`` restores them.
+    """
+
+    def __init__(self, db: Optional[ReservationDB] = None) -> None:
         self._items: dict[str, ReservationRecord] = {}
         self._lock = asyncio.Lock()
+        self._db = db
 
     async def add(self, record: ReservationRecord) -> ReservationRecord:
         async with self._lock:
             self._items[record.id] = record
+            if self._db is not None:
+                self._db.upsert(record)
         return record
 
     async def get(self, reservation_id: str) -> Optional[ReservationRecord]:
@@ -68,19 +78,58 @@ class ReservationStore:
                 return None
             updated = record.model_copy(update={**fields, "updated_at": _now()})
             self._items[reservation_id] = updated
+            if self._db is not None:
+                self._db.upsert(updated)
             return updated
 
     async def delete(self, reservation_id: str) -> bool:
         async with self._lock:
-            return self._items.pop(reservation_id, None) is not None
+            existed = self._items.pop(reservation_id, None) is not None
+            if existed and self._db is not None:
+                self._db.delete(reservation_id)
+            return existed
 
     async def list(self) -> list[ReservationRecord]:
         async with self._lock:
             return list(self._items.values())
 
+    async def load(self) -> None:
+        """Restore persisted reservations and reconcile state lost to the restart.
 
-# Single shared store instance.
-store = ReservationStore()
+        * ``pending`` → ``failed`` ("interrupted by restart"): the flow that owned
+          a pending record died with the previous process.
+        * ``locked`` / ``failed`` whose departure already passed → ``expired``: the
+          bus left while we were down.
+
+        Reconciled changes are persisted. Re-lock jobs are re-armed separately by
+        ``scheduler.jobs.rehydrate_relocks`` (the store stays scheduler-agnostic).
+        """
+        if self._db is None:
+            return
+        records = self._db.load_all()
+        now = _now()
+        async with self._lock:
+            for rec in records:
+                new_status, error = rec.status, rec.error_msg
+                if rec.status == ReservationStatus.pending:
+                    new_status, error = ReservationStatus.failed, "interrupted by restart"
+                elif (
+                    rec.status in (ReservationStatus.locked, ReservationStatus.failed)
+                    and rec.departure_datetime is not None
+                    and now >= rec.departure_datetime
+                ):
+                    new_status = ReservationStatus.expired
+                if new_status != rec.status:
+                    rec = rec.model_copy(
+                        update={"status": new_status, "error_msg": error, "updated_at": now}
+                    )
+                    self._db.upsert(rec)
+                self._items[rec.id] = rec
+        log.info(f"[persistence] restored {len(records)} reservation(s) from disk")
+
+
+# Single shared store instance, durable via SQLite.
+store = ReservationStore(db=ReservationDB(settings.reservation_db))
 
 
 def uptime_seconds() -> float:
