@@ -1,17 +1,23 @@
 # BusBooker
 
-A production-ready FastAPI service that **locks a specific bus seat** on
+A FastAPI service that **locks a specific bus seat** on
 [mobifacil.com.br](https://mobifacil.com.br) by driving a real Chromium browser
 with [Playwright](https://playwright.dev/python/), then confirming the lock via
 the site's internal API.
 
-The locking trick: by holding a seat reserved on a recurring schedule you keep
-the *adjacent* seat effectively blocked, so nobody is seated next to you.
+The service is **reservation-driven**: a reservation is created by an explicit
+user request (`POST /reservations`). A successful reservation may create a
+re-lock job that re-holds *that* seat until departure. The service never books a
+route on its own — there is no default route, no startup booking, and no periodic
+"check the configured trip" behaviour.
 
-> Refactored from the original ~1000-line `draft.py` script. Core browser
-> automation behaviour is unchanged; the code was modularised, parameterised
-> per-request, and a batch of latent bugs were fixed (each marked with a
-> `# FIX:` comment in the source).
+The locking trick: by holding your seat re-locked a bit under the seat-lock
+expiry window you keep the *adjacent* seat effectively blocked, so nobody is
+seated next to you — for as long as you keep the reservation alive.
+
+> Modularised from an original single-file script: parameterised per-request,
+> with a batch of latent bugs fixed (each marked with a `# FIX:` comment in the
+> source).
 
 ---
 
@@ -53,9 +59,9 @@ store keyed by UUID.
    │                                                                 │
    │   api/routes.py            scheduler/jobs.py                    │
    │   ├─ GET  /health          └─ AsyncIOScheduler                  │
-   │   ├─ GET  /seats              every SCHEDULER_INTERVAL (21 min) │
-   │   ├─ POST /reservations  ─┐      │                              │
-   │   ├─ GET  /reservations/{id}     │                              │
+   │   ├─ GET  /seats              per-reservation re-lock jobs only │
+   │   ├─ POST /reservations  ─┐      (relock_<id>, every 21 min     │
+   │   ├─ GET  /reservations/{id}      until departure)              │
    │   ├─ DEL  /reservations/{id}     │                              │
    │   └─ GET  /scheduler/status      │                              │
    │                          │       │                              │
@@ -74,11 +80,16 @@ store keyed by UUID.
                           https://mobifacil.com.br
 ```
 
-`run_flow()` uses Playwright's **synchronous** API, so every request that
-triggers it (`POST /reservations`, `GET /seats`) and the scheduler job dispatch
-it to a thread-pool executor and serialise it behind a global `asyncio.Lock`
-(`FLOW_LOCK`) — the persistent browser profile must never be driven by two
-flows at once. This is also why uvicorn runs with **a single worker**.
+`run_flow()` uses Playwright's **synchronous** API, so every caller that triggers
+it (`POST /reservations`, `GET /seats`, and a reservation's own re-lock job)
+dispatches it to a thread-pool executor and serialises it behind a global
+`asyncio.Lock` (`FLOW_LOCK`) — the persistent browser profile must never be
+driven by two flows at once. This is also why uvicorn runs with **a single
+worker**.
+
+The only two triggers for a booking flow are a user `POST /reservations` and the
+re-lock job belonging to a previously successful user reservation. Nothing runs a
+flow at startup or on a fixed schedule from configuration.
 
 ---
 
@@ -105,19 +116,18 @@ playwright install-deps chromium
 
 ### Configuration
 
-All settings have sane defaults (see the table below) and can be overridden via
-environment variables or a `.env` file in the project root:
+Settings are operational only — there are **no route settings** (origin,
+destination, date, departure, seat come from each request, never from config).
+All settings have sane defaults (see the table below) except `ADMIN_PASSWORD`,
+and can be overridden via environment variables or a `.env` file in the project
+root:
 
 ```dotenv
 # .env
-ORIGIN_ID=19058
-DESTINATION_ID=21787
-DATE=2026-05-28
-TARGET_DEPARTURE=00:00
-TARGET_SEAT=00
+ADMIN_PASSWORD=change-me      # required, no default
 HEADLESS=false
 WAIT_AFTER_LOCK=60
-SCHEDULER_INTERVAL=21
+SCHEDULER_INTERVAL=21         # minutes between a reservation's re-lock attempts
 ```
 
 ---
@@ -177,20 +187,21 @@ Alternatively, run it inside a `screen`/`tmux` session: `bash core/start.sh`.
 Base URL below assumes local dev (`http://127.0.0.1:8771`).
 
 ### `GET /health`
-Liveness: status, uptime, scheduler next-run time.
+Liveness: status, uptime, and whether the scheduler is running.
 ```bash
 curl http://127.0.0.1:8771/health
 ```
 ```json
-{ "status": "ok", "uptime_seconds": 42.1, "scheduler_next_run": "2026-05-30T18:21:00+00:00" }
+{ "status": "ok", "uptime_seconds": 42.1, "scheduler_running": true }
 ```
 
 ### `GET /seats`
-Fetch the live seat map for the configured route (re-uses trip resolution —
-drives the browser, so it is serialised with reservations). All query params are
-optional and fall back to config.
+Fetch the live seat map for a route (re-uses trip resolution — drives the
+browser, so it is serialised with reservations). All query params are
+**required** (`origin_id`, `destination_id`, `date`, `departure`); there are no
+server defaults. A seat-map read is not seat-specific, so no `seat` is passed.
 ```bash
-curl "http://127.0.0.1:8771/seats?seat=00"
+curl "http://127.0.0.1:8771/seats?origin_id=19058&destination_id=21787&date=2026-05-28&departure=00:00"
 ```
 ```json
 {
@@ -232,7 +243,10 @@ while on routes with many departures.
 > shape.
 
 ### `POST /reservations`
-Trigger a full lock flow (blocking, up to ~90 s). Body fields are all optional.
+Trigger a full lock flow (blocking, up to ~90 s). **All body fields are
+required** (`origin_id`, `destination_id`, `date`, `departure`, `seat`) — a
+reservation always describes a route the user explicitly chose; omitting any
+field returns 422.
 ```bash
 curl -X POST http://127.0.0.1:8771/reservations \
   -H 'Content-Type: application/json' \
@@ -271,9 +285,7 @@ curl http://127.0.0.1:8771/scheduler/status
 ```json
 {
   "running": true, "interval_minutes": 21,
-  "next_run": "2026-05-30T18:42:00+00:00",
-  "last_run": "2026-05-30T18:21:00+00:00", "last_exit_code": 0,
-  "global_next_run": "2026-05-30T18:42:00+00:00",
+  "active_relock_count": 1,
   "active_relock_jobs": [
     {
       "reservation_id": "f1c2…",
@@ -285,46 +297,39 @@ curl http://127.0.0.1:8771/scheduler/status
   ]
 }
 ```
-(`next_run` / `last_run` / `last_exit_code` / `global_next_run` describe the global
-heartbeat job; `active_relock_jobs` lists each reservation's own cycle.)
+`running` / `interval_minutes` describe the scheduler itself; `active_relock_jobs`
+lists each live reservation's re-lock cycle (`active_relock_count` is its length).
+There is no global/heartbeat job to report.
 
 ---
 
 ## Environment variables
 
+There are **no route environment variables** — origin, destination, date,
+departure and seat are always supplied per request.
+
 | Name                 | Default                     | Description                                              |
 |----------------------|-----------------------------|----------------------------------------------------------|
-| `ORIGIN_ID`          | `19058` (São Carlos)        | Origin city id used to build the search URL.             |
-| `DESTINATION_ID`     | `21787` (São Paulo)         | Destination city id.                                     |
-| `DATE`               | `2026-05-28`                | Travel date, `yyyy-mm-dd`.                               |
-| `TARGET_DEPARTURE`   | `00:00`                     | Departure time to match on the trip card.                |
-| `TARGET_SEAT`        | `00`                        | Seat number to lock.                                     |
 | `BASE_URL`           | `https://mobifacil.com.br`  | Site base URL.                                           |
 | `USER_DATA_DIR`      | `./browser_profile`         | Persistent Chromium profile directory.                   |
 | `HEADLESS`           | `false`                     | Run Chromium headless (skips xvfb).                      |
 | `ADMIN_PASSWORD`     | **(required, no default)**  | HTTP Basic password for `/admin/*` (username `admin`). Startup fails if unset. |
 | `MAX_RETRIES`        | `1`                         | Attempts for retry-wrapped browser steps.                |
 | `WAIT_AFTER_LOCK`    | `60`                        | Seconds the lock is held before confirmation.            |
-| `SCHEDULER_INTERVAL` | `21`                        | Minutes between scheduled flows.                         |
+| `SCHEDULER_INTERVAL` | `21`                        | Minutes between a reservation's re-lock attempts.        |
 | `LOG_FILE`           | `core/logs/app.log`         | Rotating log file path.                                  |
 | `LOG_MAX_BYTES`      | `5242880`                   | Max size per log file before rotation (5 MiB).           |
 | `LOG_BACKUP_COUNT`   | `3`                         | Rotated log files to keep.                               |
-
-Named city constants (`ARARAQUARA_ID`, `SAO_CARLOS_ID`, `SAO_PAULO_ID`) are also
-exported from `core/config.py` for callers.
 
 ---
 
 ## Scheduler
 
-An APScheduler `AsyncIOScheduler` is started inside the FastAPI lifespan. It runs
-two kinds of jobs, all serialised behind `FLOW_LOCK` (one browser at a time), and
-shuts down gracefully (`scheduler.shutdown(wait=False)` in the lifespan `finally`).
-
-- **Global heartbeat (`bus_flow`)** — runs the *default-config* flow every
-  `SCHEDULER_INTERVAL` minutes. Its `next_run` / `last_run` / `last_exit_code`
-  are reported by `GET /scheduler/status` (also as `global_next_run`).
-- **Per-reservation re-lock (`relock_<id>`)** — see below.
+An APScheduler `AsyncIOScheduler` is started inside the FastAPI lifespan. Its
+**only** job type is the per-reservation re-lock job (`relock_<id>`), serialised
+behind `FLOW_LOCK` (one browser at a time). Startup registers **no** booking
+job, and the scheduler shuts down gracefully (`scheduler.shutdown(wait=False)` in
+the lifespan `finally`).
 
 ### Persistent re-lock
 
@@ -375,9 +380,7 @@ curl -u admin:"$ADMIN_PASSWORD" http://127.0.0.1:8771/admin/stats
 | GET    | /admin/reservations        | List every reservation (full records).                             |
 | GET    | /admin/reservations/{id}   | One reservation, or 404.                                           |
 | DELETE | /admin/reservations/{id}   | Force-cancel any reservation: sets `cancelled`, stops its re-lock job, keeps the record. |
-| GET    | /admin/scheduler           | Scheduler status (next_run, last_run, last_exit_code, interval).   |
-| POST   | /admin/scheduler/pause     | Pause the global heartbeat job (per-reservation re-locks keep running). |
-| POST   | /admin/scheduler/resume    | Resume the global heartbeat job.                                   |
+| GET    | /admin/scheduler           | Scheduler status (running, interval_minutes, active_relock_count). |
 | GET    | /admin/stats               | Counts: total, pending, locked, failed, cancelled, expired.        |
 | POST   | /admin/shutdown            | Graceful shutdown (see below).                                     |
 

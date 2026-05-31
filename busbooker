@@ -12,11 +12,6 @@ upstream bus_reserver {
     keepalive 16;
 }
 
-gzip on;
-gzip_proxied any;
-gzip_types application/json;
-gzip_min_length 256;
-
 server {
     listen 80;
     server_name busbooker.anarquia.me;

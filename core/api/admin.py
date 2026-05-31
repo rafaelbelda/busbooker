@@ -19,12 +19,7 @@ from fastapi.security import HTTPBasic, HTTPBasicCredentials
 
 from ..config import settings
 from ..models.schemas import AdminStats, ReservationRecord, ReservationStatus
-from ..scheduler.jobs import (
-    cancel_relock,
-    pause_global_job,
-    resume_global_job,
-    scheduler_status,
-)
+from ..scheduler.jobs import cancel_relock, scheduler_status
 from ..state import store
 from ..utils.logger import log
 
@@ -81,21 +76,12 @@ async def admin_force_cancel(reservation_id: str) -> ReservationRecord:
 
 
 # ─────────────────────────────────────────────────────────────────
-# Scheduler control
+# Scheduler status (read-only)
 # ─────────────────────────────────────────────────────────────────
 @admin_router.get("/scheduler")
 async def admin_scheduler() -> dict:
+    """Scheduler running state, interval, and active re-lock job count."""
     return scheduler_status()
-
-
-@admin_router.post("/scheduler/pause")
-async def admin_scheduler_pause() -> dict:
-    return {"status": "paused", "global_next_run": pause_global_job()}
-
-
-@admin_router.post("/scheduler/resume")
-async def admin_scheduler_resume() -> dict:
-    return {"status": "resumed", "global_next_run": resume_global_job()}
 
 
 # ─────────────────────────────────────────────────────────────────

@@ -21,8 +21,8 @@ import time
 
 from playwright.sync_api import Page, sync_playwright
 
-from ..config import Settings, settings
-from ..models.schemas import ReservationRequest, RouteParams, SeatInfo
+from ..config import settings
+from ..models.schemas import RouteParams, SeatInfo
 from ..utils.logger import log
 from .browser import (
     TelemetryWatcher,
@@ -40,22 +40,28 @@ from .trip import open_search_page, resolve_all_trips, resolve_trip
 # ─────────────────────────────────────────────────────────────────
 # Param resolution
 # ─────────────────────────────────────────────────────────────────
-def resolve_route_params(req: ReservationRequest, cfg: Settings = settings) -> RouteParams:
-    """Merge an (optional) request with config defaults into frozen RouteParams."""
-    origin = req.origin_id or cfg.origin_id
-    destination = req.destination_id or cfg.destination_id
-    date = req.date or cfg.date
-    departure = req.departure or cfg.target_departure
-    seat = req.seat or cfg.target_seat
+def resolve_route_params(
+    origin_id: str,
+    destination_id: str,
+    date: str,
+    departure: str,
+    seat: str = "",
+) -> RouteParams:
+    """Build frozen RouteParams from explicit, user-supplied route values.
+
+    There is no config fallback: every route value originates from the caller's
+    request. ``seat`` is optional only because seat-map reads (/seats) don't
+    target a specific seat; reservations always pass one.
+    """
     date_formatted = f"{date[8:10]}-{date[5:7]}-{date[:4]}"
     search_url = (
-        f"{cfg.base_url}/passagem-de-onibus/"
-        f"?origin={origin}&destination={destination}"
+        f"{settings.base_url}/passagem-de-onibus/"
+        f"?origin={origin_id}&destination={destination_id}"
         f"&date={date_formatted}&isStudent=false&isPCD=false&searchValidDay=true"
     )
     return RouteParams(
-        origin_id=origin,
-        destination_id=destination,
+        origin_id=origin_id,
+        destination_id=destination_id,
         date=date,
         departure=departure,
         seat=seat,

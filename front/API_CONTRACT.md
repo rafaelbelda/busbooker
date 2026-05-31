@@ -113,7 +113,7 @@ Status codes and exact body shapes. `→` denotes the success body.
 | Method | Path | Purpose | Success | Notes |
 |---|---|---|---|---|
 | GET | `/health` | liveness | 200 → `HealthResponse` | fast |
-| GET | `/seats` | live seat map for the **configured** route | 200 → `SeatsResponse` | browser-driven; optional query params |
+| GET | `/seats` | live seat map for a route | 200 → `SeatsResponse` | browser-driven; **required** query params (`origin_id`, `destination_id`, `date`, `departure`) |
 | POST | `/search` | resolve trips+seats from a pasted mobifacil URL | 200 → `SearchResponse` | browser-driven; 422 on bad URL |
 | POST | `/reservations` | lock a seat now + start re-lock cycle | **201** → `ReservationRecord` | browser-driven; see status semantics below |
 | GET | `/reservations/{id}` | reservation detail | 200 → `ReservationRecord` | 404 if unknown |
@@ -127,9 +127,7 @@ Status codes and exact body shapes. `→` denotes the success body.
 | GET | `/admin/reservations` | list **all** reservations | 200 → `ReservationRecord[]` |
 | GET | `/admin/reservations/{id}` | one reservation | 200 → `ReservationRecord` (404 if unknown) |
 | DELETE | `/admin/reservations/{id}` | force-cancel (keeps record) | 200 → `ReservationRecord` (status `cancelled`) |
-| GET | `/admin/scheduler` | basic scheduler status | 200 → `SchedulerStatus` (**no** `active_relock_jobs`) |
-| POST | `/admin/scheduler/pause` | pause global heartbeat | 200 → `{ "status": "paused", "global_next_run": <dt\|null> }` |
-| POST | `/admin/scheduler/resume` | resume global heartbeat | 200 → `{ "status": "resumed", "global_next_run": <dt> }` |
+| GET | `/admin/scheduler` | basic scheduler status | 200 → `{ running, interval_minutes, active_relock_count }` (**no** `active_relock_jobs`) |
 | GET | `/admin/stats` | counts by status | 200 → `AdminStats` |
 | POST | `/admin/shutdown` | graceful SIGTERM | 200 → `{ "status": "shutting_down" }` / 409 (see below) |
 
@@ -242,14 +240,16 @@ seat grid — relative coordinates, origin top-left). `/seats` uses
 ```jsonc
 {
   "running": true, "interval_minutes": 21,
-  "next_run": "…", "last_run": "…", "last_exit_code": 0,   // global heartbeat job
-  "global_next_run": "…",
+  "active_relock_count": 1,                                  // == active_relock_jobs.length
   "active_relock_jobs": [
     { "reservation_id": "f1c2…", "next_run": "…", "relock_count": 3,
       "departure_datetime": "…", "minutes_until_departure": 38.5 }  // float, can be negative
   ]
 }
 ```
+There is no global/heartbeat job — the scheduler only runs per-reservation re-lock
+jobs, listed in `active_relock_jobs`. (`next_run` here is each re-lock job's own
+next fire time.)
 
 ### `AdminStats` (from `GET /admin/stats`)
 ```jsonc
@@ -258,21 +258,23 @@ seat grid — relative coordinates, origin top-left). `/seats` uses
 
 ### `HealthResponse` / `MessageResponse`
 ```jsonc
-{ "status": "ok", "uptime_seconds": 42.1, "scheduler_next_run": "…|null" }
+{ "status": "ok", "uptime_seconds": 42.1, "scheduler_running": true }
 { "detail": "reservation <id> cancelled" }
 ```
 
 ### Request bodies
-- `POST /reservations` — `ReservationRequest`, **all fields optional**, unknown
-  fields **rejected** (`extra: forbid` → 422). Allowed keys exactly:
+- `POST /reservations` — `ReservationRequest`, **all fields required**, unknown
+  fields **rejected** (`extra: forbid` → 422). Required keys exactly:
   `origin_id`, `destination_id`, `date` (`yyyy-mm-dd`), `departure` (`HH:MM`),
-  `seat` (string). Omitted fields fall back to server config defaults.
+  `seat` (string). There are no server-side route defaults — omitting any field
+  is a 422.
 - `POST /search` — `{ "url": "<full mobifacil passagem-de-onibus URL>" }`. Paste
   the URL **exactly** as copied (it contains `dd-mm-yyyy` date + `origin`/
   `destination`/`isStudent`/`isPCD` query params; the backend parses it). Only
   `mobifacil.com.br` `passagem-de-onibus` URLs are accepted (else 422).
-- `GET /seats` — optional query params `origin_id`, `destination_id`, `date`,
-  `departure`, `seat`.
+- `GET /seats` — **required** query params `origin_id`, `destination_id`, `date`
+  (`yyyy-mm-dd`), `departure` (`HH:MM`). No `seat` param (a seat-map read is not
+  seat-specific); no defaults — omitting any is a 422.
 
 ---
 
@@ -327,8 +329,8 @@ user retry explicitly).
 ### D. Admin dashboard
 - `GET /admin/stats` for counts; `GET /admin/reservations` for the table;
   `GET /admin/scheduler` (+ public `/scheduler/status` for `active_relock_jobs`);
-  pause/resume controls; `POST /admin/shutdown` with a confirm dialog (handle the
-  409 active-reservations refusal, and expect the API to go away on 200).
+  `POST /admin/shutdown` with a confirm dialog (handle the 409 active-reservations
+  refusal, and expect the API to go away on 200).
 
 ---
 

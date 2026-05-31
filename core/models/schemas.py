@@ -17,15 +17,19 @@ class ReservationStatus(str, Enum):
 
 
 class ReservationRequest(BaseModel):
-    """POST /reservations body — every field optional, falls back to config."""
+    """POST /reservations body — every field is required.
+
+    There are no server-side route defaults: a reservation always describes a
+    route the user explicitly chose. Omitting any field is a 422.
+    """
 
     model_config = ConfigDict(extra="forbid")
 
-    origin_id: Optional[str] = Field(default=None, examples=["19058"])
-    destination_id: Optional[str] = Field(default=None, examples=["21787"])
-    date: Optional[str] = Field(default=None, examples=["2026-05-28"], description="yyyy-mm-dd")
-    departure: Optional[str] = Field(default=None, examples=["00:00"])
-    seat: Optional[str] = Field(default=None, examples=["00"])
+    origin_id: str = Field(examples=["19058"])
+    destination_id: str = Field(examples=["21787"])
+    date: str = Field(examples=["2026-05-28"], description="yyyy-mm-dd")
+    departure: str = Field(examples=["00:00"])
+    seat: str = Field(examples=["00"])
 
 
 class RouteParams(BaseModel):
@@ -89,7 +93,7 @@ class SeatsResponse(BaseModel):
 class HealthResponse(BaseModel):
     status: str
     uptime_seconds: float
-    scheduler_next_run: Optional[datetime] = None
+    scheduler_running: bool
 
 
 class RelockJobInfo(BaseModel):
@@ -103,12 +107,12 @@ class RelockJobInfo(BaseModel):
 
 
 class SchedulerStatusResponse(BaseModel):
+    """Scheduler state. The scheduler only manages per-reservation re-lock jobs;
+    there is no global/automatic booking job."""
+
     running: bool
     interval_minutes: int
-    next_run: Optional[datetime] = None  # global heartbeat job (kept for back-compat)
-    last_run: Optional[datetime] = None
-    last_exit_code: Optional[int] = None
-    global_next_run: Optional[datetime] = None
+    active_relock_count: int = 0
     active_relock_jobs: list[RelockJobInfo] = Field(default_factory=list)
 
 

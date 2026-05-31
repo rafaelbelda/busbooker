@@ -1,15 +1,14 @@
 """
 APScheduler AsyncIOScheduler wiring.
 
-Two kinds of jobs run on a single AsyncIOScheduler:
+The scheduler manages exactly one kind of job: a **per-reservation re-lock job**
+(``relock_<id>``) registered when a user-created reservation first locks
+successfully. It re-locks that seat every ``SCHEDULER_INTERVAL`` minutes until
+the trip's departure datetime passes, then auto-expires.
 
-* a global "heartbeat" job (``bus_flow``) that runs the default-config flow every
-  ``SCHEDULER_INTERVAL`` minutes — kept for backwards compatibility and surfaced
-  via the existing /scheduler/status fields (next_run / last_run / last_exit_code);
-* one **per-reservation re-lock job** (``relock_<id>``) registered when a
-  reservation first locks successfully. It re-locks the seat every
-  ``SCHEDULER_INTERVAL`` minutes until the trip's departure datetime passes, then
-  auto-expires.
+There is no global/heartbeat/default-route job. The scheduler never starts a
+booking flow on its own — a flow only runs in response to an explicit user
+reservation, or a re-lock belonging to one.
 
 All flows are blocking (Playwright sync API) so they are dispatched to a
 thread-pool executor and serialised behind the global FLOW_LOCK — one browser at
@@ -18,7 +17,6 @@ a time.
 from __future__ import annotations
 
 import asyncio
-from dataclasses import dataclass
 from datetime import datetime, timezone
 from typing import Optional
 
@@ -27,46 +25,18 @@ from apscheduler.schedulers.asyncio import AsyncIOScheduler
 from apscheduler.triggers.interval import IntervalTrigger
 
 from ..config import settings
-from ..models.schemas import ReservationRequest, ReservationStatus
+from ..models.schemas import ReservationStatus
 from ..services.flow import resolve_route_params, run_flow
 from ..state import FLOW_LOCK, store
 from ..utils.logger import log
 
-_JOB_ID = "bus_flow"
 _RELOCK_PREFIX = "relock_"
 
-
-@dataclass
-class JobState:
-    last_run: Optional[datetime] = None
-    last_exit_code: Optional[int] = None
-
-
-job_state = JobState()
 scheduler = AsyncIOScheduler(timezone="America/Sao_Paulo")
 
 
 def _relock_job_id(reservation_id: str) -> str:
     return f"{_RELOCK_PREFIX}{reservation_id}"
-
-
-# ─────────────────────────────────────────────────────────────────
-# Global heartbeat job (kept, demoted)
-# ─────────────────────────────────────────────────────────────────
-async def _scheduled_flow() -> None:
-    """Default-config heartbeat: run run_flow() off the event loop, serialised."""
-    params = resolve_route_params(ReservationRequest())
-    log.info("[scheduler] starting heartbeat flow")
-    job_state.last_run = datetime.now(timezone.utc)
-    try:
-        loop = asyncio.get_running_loop()
-        async with FLOW_LOCK:  # one browser/profile at a time
-            code, _trip = await loop.run_in_executor(None, run_flow, params)
-        job_state.last_exit_code = code
-        log.info(f"[scheduler] heartbeat finished — exit={code}")
-    except Exception as exc:
-        job_state.last_exit_code = 2
-        log.exception(f"[scheduler] heartbeat raised: {exc!r}")
 
 
 # ─────────────────────────────────────────────────────────────────
@@ -103,13 +73,11 @@ async def _relock_job(reservation_id: str) -> None:
         f"(seat {record.seat}, {record.date} {record.departure})"
     )
     params = resolve_route_params(
-        ReservationRequest(
-            origin_id=record.origin_id,
-            destination_id=record.destination_id,
-            date=record.date,
-            departure=record.departure,
-            seat=record.seat,
-        )
+        origin_id=record.origin_id,
+        destination_id=record.destination_id,
+        date=record.date,
+        departure=record.departure,
+        seat=record.seat,
     )
 
     # (3) Run the flow off the loop, serialised behind FLOW_LOCK.
@@ -197,60 +165,21 @@ def list_relock_jobs() -> list[tuple[str, Optional[datetime]]]:
 # Lifecycle / status
 # ─────────────────────────────────────────────────────────────────
 def start_scheduler() -> None:
+    # Starts the scheduler only. No booking job is registered at startup — flows
+    # run solely from a user reservation or its own re-lock job.
     if scheduler.running:
         return
-    scheduler.add_job(
-        _scheduled_flow,
-        trigger=IntervalTrigger(minutes=settings.scheduler_interval),
-        id=_JOB_ID,
-        max_instances=1,
-        coalesce=True,
-        replace_existing=True,
-    )
     scheduler.start()
-    log.info(f"[scheduler] started — every {settings.scheduler_interval} min")
-
+    log.info("[scheduler] started (no startup booking job)")
 
 def shutdown_scheduler() -> None:
     if scheduler.running:
         scheduler.shutdown(wait=False)
         log.info("[scheduler] shut down")
 
-
-def next_run_time() -> Optional[datetime]:
-    job = scheduler.get_job(_JOB_ID) if scheduler.running else None
-    return job.next_run_time if job else None
-
-
-def pause_global_job() -> Optional[datetime]:
-    """Pause the global heartbeat job. Per-reservation re-locks keep running."""
-    if scheduler.running:
-        try:
-            scheduler.pause_job(_JOB_ID)
-            log.warning("[scheduler] global heartbeat paused")
-        except JobLookupError:
-            pass
-    return next_run_time()  # None once paused
-
-
-def resume_global_job() -> Optional[datetime]:
-    """Resume the global heartbeat job."""
-    if scheduler.running:
-        try:
-            scheduler.resume_job(_JOB_ID)
-            log.info("[scheduler] global heartbeat resumed")
-        except JobLookupError:
-            pass
-    return next_run_time()
-
-
 def scheduler_status() -> dict:
-    global_next = next_run_time()
     return {
         "running": scheduler.running,
         "interval_minutes": settings.scheduler_interval,
-        "next_run": global_next,
-        "last_run": job_state.last_run,
-        "last_exit_code": job_state.last_exit_code,
-        "global_next_run": global_next,
+        "active_relock_count": len(list_relock_jobs()),
     }

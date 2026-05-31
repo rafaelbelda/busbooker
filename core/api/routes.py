@@ -9,7 +9,6 @@ from uuid import uuid4
 
 from fastapi import APIRouter, HTTPException, Query, Response
 
-from ..config import settings
 from ..models.schemas import (
     HealthResponse,
     MessageResponse,
@@ -26,7 +25,6 @@ from ..models.schemas import (
 from ..scheduler.jobs import (
     cancel_relock,
     list_relock_jobs,
-    next_run_time,
     schedule_relock,
     scheduler_status,
 )
@@ -57,7 +55,7 @@ async def health() -> HealthResponse:
     return HealthResponse(
         status="ok",
         uptime_seconds=round(uptime_seconds(), 2),
-        scheduler_next_run=next_run_time(),
+        scheduler_running=scheduler_status()["running"],
     )
 
 
@@ -66,17 +64,19 @@ async def health() -> HealthResponse:
 # ─────────────────────────────────────────────────────────────────
 @router.get("/seats", response_model=SeatsResponse)
 async def get_seats(
-    origin_id: Optional[str] = Query(default=None),
-    destination_id: Optional[str] = Query(default=None),
-    date: Optional[str] = Query(default=None),
-    departure: Optional[str] = Query(default=None),
-    seat: Optional[str] = Query(default=None),
+    origin_id: str = Query(),
+    destination_id: str = Query(),
+    date: str = Query(description="yyyy-mm-dd"),
+    departure: str = Query(description="HH:MM departure to match"),
 ) -> SeatsResponse:
-    req = ReservationRequest(
-        origin_id=origin_id, destination_id=destination_id,
-        date=date, departure=departure, seat=seat,
+    # All route values are required query params — there are no server defaults.
+    # Seat-map reads are not seat-specific, so no seat is needed here.
+    params = resolve_route_params(
+        origin_id=origin_id,
+        destination_id=destination_id,
+        date=date,
+        departure=departure,
     )
-    params = resolve_route_params(req, settings)
     loop = asyncio.get_running_loop()
     try:
         async with FLOW_LOCK:  # browser flow — serialise with reservations
@@ -160,7 +160,13 @@ async def search(req: SearchRequest) -> SearchResponse:
 # ─────────────────────────────────────────────────────────────────
 @router.post("/reservations", response_model=ReservationRecord, status_code=201)
 async def create_reservation(req: ReservationRequest, response: Response) -> ReservationRecord:
-    params = resolve_route_params(req, settings)
+    params = resolve_route_params(
+        origin_id=req.origin_id,
+        destination_id=req.destination_id,
+        date=req.date,
+        departure=req.departure,
+        seat=req.seat,
+    )
     now = datetime.now(timezone.utc)
     record = ReservationRecord(
         id=str(uuid4()),

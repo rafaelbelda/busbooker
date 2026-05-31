@@ -1,23 +1,17 @@
 """
 Centralised configuration for the bus-reserver service.
 
-All previously-hardcoded values from the original script are exposed here as
-``pydantic-settings`` fields (overridable via environment / ``.env``) with the
-same defaults. Static API paths and the named city constants live as plain
-module-level constants.
+Operational, non-route settings are exposed here as ``pydantic-settings`` fields
+(overridable via environment / ``.env``). Route values (origin, destination,
+date, departure, seat) are **never** configured here — they always come from an
+explicit user request, so the service can never book a default route on its own.
+Static API paths live as plain module-level constants.
 """
 from __future__ import annotations
 
 from typing import Optional
 
 from pydantic_settings import BaseSettings, SettingsConfigDict
-
-# ─────────────────────────────────────────────────────────────────
-# Named city constants (exposed for callers / route defaults)
-# ─────────────────────────────────────────────────────────────────
-ARARAQUARA_ID: str = "19052"
-SAO_CARLOS_ID: str = "19058"
-SAO_PAULO_ID: str = "21787"
 
 # ─────────────────────────────────────────────────────────────────
 # Static demandware endpoint paths (not route-specific)
@@ -37,13 +31,6 @@ class Settings(BaseSettings):
         case_sensitive=False,
         extra="ignore",
     )
-
-    # ---- route defaults ----
-    origin_id: str = SAO_CARLOS_ID
-    destination_id: str = SAO_PAULO_ID
-    date: str = "2026-05-28"  # yyyy-mm-dd
-    target_departure: str = "00:00"
-    target_seat: str = "00"
 
     # ---- browser / site ----
     base_url: str = "https://mobifacil.com.br"
