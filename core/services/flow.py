@@ -206,13 +206,14 @@ def fetch_seat_map(params: RouteParams) -> list[SeatInfo]:
     if not lsservicos:
         raise RuntimeError("no trips found in search page HTML")
 
-    matching = next(
-        (t for t in lsservicos
-         if params.departure in (t.get("saida", "").rsplit(" ", 1) + [""])[-1]),
-        None,
-    )
+    def _dep_hour(trip: dict) -> str:
+        saida = trip.get("saida", "")           # "02/06/2026 05:50"
+        return saida.rsplit(" ", 1)[-1] if " " in saida else saida
+
+    matching = next((t for t in lsservicos if _dep_hour(t) == params.departure), None)
     if not matching:
-        raise RuntimeError(f"departure {params.departure} not in search results")
+        available = [_dep_hour(t) for t in lsservicos]
+        raise RuntimeError(f"departure {params.departure} not in search results {available}")
 
     url = build_bus_details_url(matching, params.date)
     bus_data = fetch_bus_details(url)
