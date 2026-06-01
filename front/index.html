@@ -1,0 +1,74 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
+  <meta name="color-scheme" content="dark">
+  <meta name="theme-color" content="#0b0907">
+  <title>BUSBOOKER · Seat Reservation Computer</title>
+
+  <!-- Seven/fourteen-segment + console monospace. Graceful monospace fallback if offline. -->
+  <link rel="preconnect" href="https://fonts.googleapis.com">
+  <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+  <link href="https://fonts.googleapis.com/css2?family=Share+Tech+Mono&display=swap" rel="stylesheet">
+  <link rel="stylesheet" href="https://cdn.jsdelivr.net/npm/dseg@0.46.0/css/dseg.css">
+  <link rel="stylesheet" href="styles.css">
+</head>
+<body class="flicker">
+  <main class="console" role="main" aria-label="BusBooker reservation console">
+    <span class="rivet tl" aria-hidden="true"></span>
+    <span class="rivet tr" aria-hidden="true"></span>
+    <span class="rivet bl" aria-hidden="true"></span>
+    <span class="rivet br" aria-hidden="true"></span>
+
+    <!-- ============ MASTHEAD ============ -->
+    <header class="masthead">
+      <div class="brandrow">
+        <div class="wordmark">
+          <h1>BUSBOOKER</h1>
+          <span class="sub">Seat Reservation Computer</span>
+        </div>
+        <div class="serialplate">
+          MODEL <b>AGC-66</b><br>
+          BLOCK <b>II</b> · REV <b>7.0</b><br>
+          UPLINK <b>SP/UTC</b>
+        </div>
+      </div>
+
+      <!-- status lamp bank -->
+      <div class="lampbank" role="status" aria-label="system status">
+        <div class="lamp" data-lamp="sys"><span class="bulb"></span><span class="lbl">Sys OK</span></div>
+        <div class="lamp" data-lamp="sched"><span class="bulb"></span><span class="lbl">Sched</span></div>
+        <div class="lamp proc" data-lamp="proc"><span class="bulb"></span><span class="lbl">Proc</span></div>
+        <div class="lamp" data-lamp="link"><span class="bulb"></span><span class="lbl">Link</span></div>
+
+        <div class="lamp" style="min-width:auto;margin-left:auto;align-items:flex-end;gap:5px">
+          <div class="readout" style="padding:5px 9px">
+            <span class="seg7 seg-sm" id="uptimeReadout" aria-label="uptime">--:--:--</span>
+          </div>
+          <span class="lbl" style="letter-spacing:.16em">Uptime</span>
+        </div>
+
+      </div>
+    </header>
+
+    <!-- ============ MODE SELECTOR ============ -->
+    <nav class="modebar" aria-label="mode selector">
+      <button class="modebtn" type="button" data-view="search" aria-pressed="true">Search</button>
+      <button class="modebtn" type="button" data-view="monitor" aria-pressed="false">Monitor</button>
+      <button class="modebtn" type="button" data-view="admin" aria-pressed="false">Admin</button>
+    </nav>
+
+    <!-- ============ VIEWS ============ -->
+    <div class="body">
+      <section class="view active" id="view-search" aria-label="search and reserve"></section>
+      <section class="view" id="view-monitor" aria-label="monitor reservation"></section>
+      <section class="view" id="view-admin" aria-label="admin dashboard"></section>
+    </div>
+  </main>
+
+  <script src="api.js"></script>
+  <script src="app.js"></script>
+  <script src="monitor.js"></script>
+</body>
+</html>
