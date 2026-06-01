@@ -44,7 +44,10 @@ def open_search_page(page: Page, telemetry: TelemetryWatcher, params: RouteParam
     log.info("[step 1] loading search page")
 
     def _load() -> None:
-        page.goto(params.search_url, wait_until="networkidle", timeout=55_000)
+        # "load" instead of "networkidle": analytics/tracking scripts keep the
+        # network busy indefinitely and cause networkidle to always time out.
+        # .wait_for_selector below handles waiting for the actual trip content.
+        page.goto(params.search_url, wait_until="load", timeout=55_000)
         if "mobifacil" not in page.url:
             raise RuntimeError(f"Unexpected redirect: {page.url}")
         check_detection(page, "search_load")
@@ -54,7 +57,7 @@ def open_search_page(page: Page, telemetry: TelemetryWatcher, params: RouteParam
             raise RuntimeError("Session cookies absent")
         log.info(f"[step 1] session cookies: {dw}")
         try:
-            page.wait_for_selector(".listTripsCard", timeout=15000)
+            page.wait_for_selector(".listTripsCard", timeout=30_000)
             page.wait_for_timeout(2000)
             log.info("[step 1] trip list rendered")
         except Exception as exc:  # FIX (bug 2): no bare except
