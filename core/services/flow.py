@@ -34,7 +34,7 @@ from .browser import (
 )
 from .checkout import confirm_seat_locked, proceed_to_checkout
 from .seat import check_seat_availability, lock_seat, parse_seat_map
-from .trip import open_search_page, resolve_all_trips, resolve_trip
+from .trip import open_search_page, resolve_all_trips, resolve_trip, resolve_trip_direct
 
 
 # ─────────────────────────────────────────────────────────────────
@@ -204,7 +204,7 @@ def fetch_seat_map(params: RouteParams) -> list[SeatInfo]:
         page.on("response", telemetry.on_response)
         try:
             open_search_page(page, telemetry, params)
-            trip = resolve_trip(page, params)
+            trip = resolve_trip_direct(page, params)
             return parse_seat_map(trip.get("seatMap", []))
         finally:
             try:

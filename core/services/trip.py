@@ -335,51 +335,70 @@ def _parse_all_trips(data: dict) -> list[dict]:
 def resolve_all_trips(page: Page, params: RouteParams) -> list[dict]:
     """
     Enumerate every non-sold-out trip card on the already-loaded search page and
-    capture each one's BusDetails (incl. seatMap) by navigating to its details
-    URL. Reuses the BusDetails intercept rather than re-implementing the flow.
+    fetch each one's BusDetails via page.request.get() — the data-urlbusdetails
+    attribute is the JSON API endpoint directly, so no browser navigation needed.
     Returns trips de-duplicated by service_id.
     """
-    collected: dict[str, dict] = {}
-
-    def on_response(response: Response) -> None:
-        if BUS_DETAILS_PATH not in response.url:
-            return
+    cards = page.locator(".listTripsCard")
+    urls: list[str] = []
+    for i in range(cards.count()):
+        card = cards.nth(i)
         try:
-            data = response.json()
-        except Exception as exc:  # not all BusDetails hits are JSON
-            log.debug(f"[search] BusDetails parse skipped: {exc!r}")
-            return
-        for trip in _parse_all_trips(data):
-            sid = trip["service_id"]
-            if sid and sid not in collected:
-                collected[sid] = trip
+            if "soldOut" in (card.get_attribute("class") or ""):
+                continue
+            url = card.get_attribute("data-urlbusdetails")
+            if url:
+                urls.append(url if url.startswith("http") else settings.base_url + url)
+        except Exception as exc:
+            log.debug(f"[search] card {i} skipped: {exc!r}")
+    log.info(f"[search] {len(urls)} trip detail URLs to fetch directly")
 
-    page.on("response", on_response)
-    try:
-        # Collect every detail URL first — the DOM changes once we navigate away.
-        cards = page.locator(".listTripsCard")
-        urls: list[str] = []
-        for i in range(cards.count()):
-            card = cards.nth(i)
-            try:
-                if "soldOut" in (card.get_attribute("class") or ""):
-                    continue
-                url = card.get_attribute("data-urlbusdetails")
-                if url:
-                    urls.append(url if url.startswith("http") else settings.base_url + url)
-            except Exception as exc:
-                log.debug(f"[search] card {i} skipped: {exc!r}")
-        log.info(f"[search] {len(urls)} trip detail URLs to resolve")
-
-        for idx, url in enumerate(urls):
-            try:
-                page.goto(url, wait_until="networkidle", timeout=30_000)
-                page.wait_for_timeout(1500)
-                stochastic_idle(page, "search_detail")
-            except Exception as exc:
-                log.warning(f"[search] detail {idx} navigation failed: {exc!r}")
-    finally:
-        page.remove_listener("response", on_response)
+    collected: dict[str, dict] = {}
+    for idx, url in enumerate(urls):
+        try:
+            resp = page.request.get(url, timeout=15_000)
+            if not resp.ok:
+                log.warning(f"[search] detail {idx} HTTP {resp.status}")
+                continue
+            data = resp.json()
+            for trip in _parse_all_trips(data):
+                sid = trip["service_id"]
+                if sid and sid not in collected:
+                    collected[sid] = trip
+            jitter(300, 800)
+        except Exception as exc:
+            log.warning(f"[search] detail {idx} failed: {exc!r}")
 
     log.info(f"[search] resolved {len(collected)} trips")
     return list(collected.values())
+
+
+def resolve_trip_direct(page: Page, params: RouteParams) -> dict:
+    """
+    Read-only fast path for /seats: extracts the matching trip's
+    data-urlbusdetails URL from the DOM and fetches BusDetails via
+    page.request.get() without navigating the browser.
+    Falls back to resolve_trip() if the URL isn't in the DOM or the request fails.
+    Not for use in the booking flow — lock_seat_ui() needs the browser on the trip page.
+    """
+    url = _extract_bus_url(page, params)
+    if not url:
+        log.warning("[step 2] no matching bus URL in DOM — falling back to resolve_trip")
+        return resolve_trip(page, params)
+
+    full_url = url if url.startswith("http") else settings.base_url + url
+    log.info(f"[step 2] direct fetch for departure={params.departure}")
+    try:
+        resp = page.request.get(full_url, timeout=15_000)
+        if not resp.ok:
+            raise RuntimeError(f"HTTP {resp.status}")
+        data = resp.json()
+        result = _parse_bus_details(data, params)
+        if result:
+            log.info(f"[step 2] direct fetch OK — serviceId={result['serviceId']}")
+            debug_seat_map_structure(result["seatMap"])
+            return result
+        raise RuntimeError("no matching trip in BusDetails response")
+    except Exception as exc:
+        log.warning(f"[step 2] direct fetch failed: {exc!r} — falling back to resolve_trip")
+        return resolve_trip(page, params)
