@@ -24,7 +24,7 @@ sys.path.insert(0, ".")
 
 from playwright.sync_api import Response, sync_playwright
 
-from core.services.browser import build_context, jitter
+from core.services.browser import jitter
 
 
 # Noise we don't care about.
@@ -77,7 +77,22 @@ def run(search_url: str) -> int:
             print(f"  [{resp.status}] {parsed.path[:80]}")
 
     with sync_playwright() as pw:
-        ctx = build_context(pw)
+        # Force headless + isolated profile so this script works on headless
+        # servers and doesn't conflict with the running service's browser_profile.
+        ctx = pw.chromium.launch_persistent_context(
+            user_data_dir="./browser_profile_explore",
+            headless=True,
+            locale="pt-BR",
+            timezone_id="America/Sao_Paulo",
+            user_agent=(
+                "Mozilla/5.0 (Windows NT 10.0; Win64; x64) "
+                "AppleWebKit/537.36 (KHTML, like Gecko) "
+                "Chrome/147.0.0.0 Safari/537.36"
+            ),
+            args=["--disable-blink-features=AutomationControlled", "--no-sandbox",
+                  "--disable-dev-shm-usage"],
+            ignore_default_args=["--enable-automation"],
+        )
         page = ctx.new_page()
         page.on("response", on_response)
         try:
