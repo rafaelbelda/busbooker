@@ -19,13 +19,13 @@ If this document and `/openapi.json` ever disagree, `/openapi.json` wins.
 
 These will break the UI if ignored. They are not optional.
 
-1. **Browser-driven endpoints are slow and serialized.** `POST /search`,
-   `POST /reservations`, and `GET /seats` each drive a real headless browser on
-   the server. They are **synchronous** (the HTTP response is sent only when the
-   flow finishes) and can take **up to ~90 s** (`/reservations`) or **longer**
-   for `/search` (one page fetch *per trip*). The server runs **one browser flow
-   at a time** behind a global lock — concurrent calls **queue** server-side, they
-   do not run in parallel. See §3.
+1. **`POST /reservations` is slow and browser-driven.** The reservation endpoint
+   drives a real headless browser on the server. It is **synchronous** (the HTTP
+   response is sent only when the flow finishes) and can take **up to ~90 s**.
+   The server runs **one browser flow at a time** behind a global lock — concurrent
+   reservation calls **queue** server-side. **`POST /search` and `GET /seats` are
+   NOT browser-driven** — they are plain HTTP calls (~2–5 s each) and do NOT hold
+   the browser lock; they can run concurrently with a reservation. See §3.
 
 2. **CORS is not configured.** The backend has **no CORS middleware**. A browser
    app served from a *different origin* than the API will be blocked. You must
@@ -68,10 +68,11 @@ These will break the UI if ignored. They are not optional.
   `/scheduler/status`, `/admin/*`, `/docs`, `/redoc`, `/openapi.json`.
 
 ### Client timeouts
-Set your HTTP client timeout to **≥ 120 s** for the three browser-driven calls
-(nginx `proxy_read_timeout` is 120 s). With `fetch`, use an `AbortController` but
-**do not abort early** — a 30 s default will kill a valid in-progress lock. Health
-and read-only calls can use a short timeout.
+- `POST /reservations`: set timeout to **≥ 120 s** (nginx `proxy_read_timeout` is
+  120 s). Use an `AbortController` but **do not abort early** — a 30 s default will
+  kill a valid in-progress lock.
+- `POST /search` / `GET /seats`: 30 s is safe; typical response is 2–5 s.
+- All other calls: 15 s is fine.
 
 ---
 
@@ -95,21 +96,20 @@ base64. **Serve over HTTPS** so they aren't exposed.
 
 ## 3. Concurrency model (what the UI must enforce)
 
-- One browser flow runs at a time (server-side global lock). If the user triggers
-  a second browser-bound call (`/search`, `/reservations`, `/seats`) while one is
-  running, it **waits its turn** — the request just takes longer.
-- **Back-pressure:** too many browser-bound calls queued at once get a fast
-  **503** (`Retry-After: 30`) instead of queueing forever (`MAX_FLOW_QUEUE`). If
-  per-IP rate limiting is enabled server-side, excess calls get **429**
-  (`Retry-After: 60`). Treat both as "try again shortly", honour `Retry-After`,
-  and never auto-retry tightly.
-- The UI should **serialize browser-bound actions**: disable the relevant buttons
-  and show a "working…" state until the in-flight call returns. Avoid firing
-  `/search` and `/reservations` simultaneously — this also keeps you clear of the
-  503/429 limits.
+- **One browser flow runs at a time** (server-side global lock). Only
+  `POST /reservations` holds this lock. `/search` and `/seats` are pure HTTP and
+  **never block or are blocked by** the reservation lock — they can run freely at
+  any time, including while a reservation is in progress.
+- **Back-pressure on reservations:** too many reservation calls queued at once get
+  a fast **503** (`Retry-After: 30`) instead of queueing forever (`MAX_FLOW_QUEUE`).
+  Per-IP rate limiting returns **429** (`Retry-After: 60`). Treat both as
+  "try again shortly", honour `Retry-After`, and never auto-retry tightly.
+- The UI should **serialize reservation actions only**: disable the reserve button
+  and show a "working…" state until `/reservations` returns. Search and seat-map
+  reads can proceed independently.
 - Read-only endpoints (`/health`, `/scheduler/status`, `GET /reservations/{id}`,
-  all non-mutating `/admin/*` reads) are fast and safe to call any time, including
-  while a browser flow runs.
+  `/search`, `/seats`, all non-mutating `/admin/*` reads) are safe to call at any
+  time, including while a reservation is running.
 
 ---
 
@@ -122,8 +122,8 @@ Status codes and exact body shapes. `→` denotes the success body.
 | Method | Path | Purpose | Success | Notes |
 |---|---|---|---|---|
 | GET | `/health` | liveness | 200 → `HealthResponse` | fast |
-| GET | `/seats` | live seat map for a route | 200 → `SeatsResponse` | browser-driven; **required** query params (`origin_id`, `destination_id`, `date`, `departure`) |
-| POST | `/search` | resolve trips+seats from a pasted mobifacil URL | 200 → `SearchResponse` | browser-driven; 422 on bad URL |
+| GET | `/seats` | live seat map for a route | 200 → `SeatsResponse` | ~2–5 s; **required** query params (`origin_id`, `destination_id`, `date`, `departure`) |
+| POST | `/search` | resolve trips for a pasted mobifacil URL | 200 → `SearchResponse` | ~2 s; 422 on bad URL |
 | POST | `/reservations` | lock a seat now + start re-lock cycle | **201** → `ReservationRecord` | browser-driven; see status semantics below |
 | GET | `/reservations/{id}` | reservation detail | 200 → `ReservationRecord` | 404 if unknown |
 | DELETE | `/reservations/{id}` | forget reservation + stop its re-lock | 200 → `MessageResponse` | 404 if unknown |
@@ -224,7 +224,7 @@ hand-copying when possible.
   "seats": [ { "number": "01", "available": true } ] }   // note: number/available
 ```
 
-### `SearchResponse` / `TripResult` / `TripSeat` (from `POST /search`)
+### `SearchResponse` / `TripResult` (from `POST /search`)
 ```jsonc
 {
   "origin_id": "-3", "destination_id": "19052", "date": "2026-05-30",
@@ -233,17 +233,18 @@ hand-copying when possible.
       "service_id": "12345",
       "departure": "08:00", "arrival": "11:30",
       "company": "Empresa X", "price": "130.55", "service_class": "Executivo",
-      "seats": [
-        { "numero": "01", "disponivel": true, "posX": 40.0, "posY": 20.0 }
-      ]
+      "duration": "1h40",          // human-readable trip duration
+      "available_seats": 25,       // free seats (from provider listing, no BusDetails needed)
+      "has_second_floor": false,   // double-decker coach
+      "seats": []                  // always empty — use GET /seats for individual seat data
     }
   ]
 }
 ```
-**Seat field names differ from `/seats`.** Search seats use the raw site fields
-`numero` (string), `disponivel` (bool), `posX`/`posY` (floats, for laying out the
-seat grid — relative coordinates, origin top-left). `/seats` uses
-`number`/`available`. Don't mix them.
+**`seats` is always empty in search results.** Individual seat availability
+requires a `GET /seats` call for the chosen trip. Use `available_seats` for the
+seat-count display in the trip list. The two-step flow is intentional: search is
+fast (~2 s, HTML parse only); seat detail is fetched on demand per trip.
 
 ### `SchedulerStatusResponse` (from `GET /scheduler/status`)
 ```jsonc
@@ -311,18 +312,20 @@ user retry explicitly).
 ## 8. Recommended flows
 
 ### A. Search → pick → reserve
-1. User pastes the mobifacil URL → `POST /search`. Show a long-running spinner
-   (this can take a while; see §0.1).
-2. Render `trips[]`; for the chosen trip render its `seats[]` (use `posX`/`posY`
-   for the seat-grid layout; gray out `disponivel: false`).
-3. On seat selection, build the reservation body by **carrying values from the
-   search response**:
+1. User pastes the mobifacil URL → `POST /search` (~2 s). Render the trip list
+   using `departure`, `arrival`, `price`, `service_class`, `duration`,
+   `available_seats`, `has_second_floor`. No spinner needed — it's fast.
+2. User selects a trip → `GET /seats` with `origin_id`, `destination_id`, `date`,
+   and the chosen `TripResult.departure`. Render the seat map from
+   `SeatsResponse.seats` (sequential grid; seats use `number`/`available`).
+3. User picks a seat → build the reservation body:
    `origin_id` = `SearchResponse.origin_id`,
    `destination_id` = `SearchResponse.destination_id`,
    `date` = `SearchResponse.date`,
    `departure` = chosen `TripResult.departure`,
-   `seat` = chosen `TripSeat.numero`.
-4. `POST /reservations` (disable submit until it returns). Branch on status per §4.
+   `seat` = chosen `SeatsResponse.seats[i].number`.
+4. `POST /reservations` (disable submit until it returns; this IS slow ~90 s).
+   Branch on status per §4.
 
 ### B. Monitor a reservation
 - After a `201`, poll `GET /reservations/{id}` (e.g. every 20–30 s) to reflect

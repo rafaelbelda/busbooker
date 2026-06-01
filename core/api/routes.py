@@ -73,7 +73,7 @@ async def health() -> HealthResponse:
 # ─────────────────────────────────────────────────────────────────
 # Live seat map
 # ─────────────────────────────────────────────────────────────────
-@router.get("/seats", response_model=SeatsResponse, dependencies=[Depends(browser_guard)])
+@router.get("/seats", response_model=SeatsResponse)
 async def get_seats(
     origin_id: str = Query(),
     destination_id: str = Query(),
@@ -97,11 +97,10 @@ async def get_seats(
     )
     loop = asyncio.get_running_loop()
     try:
-        async with FLOW_LOCK:  # browser flow — serialise with reservations
-            seats = await loop.run_in_executor(None, fetch_seat_map, params)
+        # No FLOW_LOCK: fetch_seat_map uses httpx, not the browser session.
+        seats = await loop.run_in_executor(None, fetch_seat_map, params)
     except Exception as exc:
         log.exception(f"[/seats] failed: {exc!r}")
-        # Generic detail to the client; full exception stays in the server log.
         raise HTTPException(status_code=500, detail="seat map fetch failed") from exc
 
     return SeatsResponse(
@@ -154,17 +153,16 @@ def _parse_search_url(url: str) -> dict:
     }
 
 
-@router.post("/search", response_model=SearchResponse, dependencies=[Depends(browser_guard)])
+@router.post("/search", response_model=SearchResponse)
 async def search(req: SearchRequest) -> SearchResponse:
     parsed = _parse_search_url(req.url)
     params = resolve_search_params(parsed["origin"], parsed["destination"], parsed["date"], req.url)
     loop = asyncio.get_running_loop()
     try:
-        async with FLOW_LOCK:  # browser flow — serialise with reservations
-            trips_raw = await loop.run_in_executor(None, search_trips, params)
+        # No FLOW_LOCK: search_trips uses httpx, not the browser session.
+        trips_raw = await loop.run_in_executor(None, search_trips, params)
     except Exception as exc:
         log.exception(f"[/search] failed: {exc!r}")
-        # Generic detail to the client; full exception stays in the server log.
         raise HTTPException(status_code=500, detail="search failed") from exc
 
     return SearchResponse(

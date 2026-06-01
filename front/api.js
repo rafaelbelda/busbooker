@@ -9,8 +9,10 @@
 (function () {
   "use strict";
 
-  // Browser-driven calls: long, serialized server-side. ≥120s timeout, never abort early.
+  // Reservation: browser-driven, can take up to ~90s. Never abort early.
   const BROWSER_TIMEOUT = 125000;
+  // Search + seats: plain httpx calls server-side, ~2-5s expected.
+  const HTTP_TIMEOUT = 30000;
   const READ_TIMEOUT = 15000;
 
   class ApiError extends Error {
@@ -93,7 +95,7 @@
     },
 
     async search(url) {
-      const r = await http("POST", "/search", { body: { url }, timeout: BROWSER_TIMEOUT });
+      const r = await http("POST", "/search", { body: { url }, timeout: HTTP_TIMEOUT });
       const bp = backpressure(r.status, r.retryAfter);
       if (bp) throw bp;
       if (r.status !== 200) throw new ApiError(r.status, parseDetail(r.data, "search failed"), {
@@ -106,7 +108,7 @@
       const q = new URLSearchParams({
         origin_id: p.origin_id, destination_id: p.destination_id, date: p.date, departure: p.departure,
       });
-      const r = await http("GET", "/seats?" + q.toString(), { timeout: BROWSER_TIMEOUT });
+      const r = await http("GET", "/seats?" + q.toString(), { timeout: HTTP_TIMEOUT });
       const bp = backpressure(r.status, r.retryAfter);
       if (bp) throw bp;
       if (r.status !== 200) throw new ApiError(r.status, parseDetail(r.data, "seat map failed"));

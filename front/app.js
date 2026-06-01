@@ -47,7 +47,9 @@
   /* ---------- shared state ---------- */
   const state = {
     view: "search",
-    search: null, trip: null, seat: null, activeFloor: 0,
+    search: null, trip: null, seat: null,
+    seatMap: null,   // fetched from GET /seats when a trip is selected
+    activeFloor: 0,
     reserving: false, browserBusy: false,
     monitorId: localStorage.getItem("bb_resv") || "",
     adminAuth: null,
@@ -89,8 +91,9 @@
     if (withDash) b.appendChild(el("div", { class: "procdash", html: "<i></i><i></i><i></i><i></i><i></i><i></i>" }));
     return b;
   }
-  const PROC_SUB = "browser flow is serialized server-side — please hold";
-  const workingBanner = (t) => banner("proc", t || "WORKING… THIS CAN TAKE UP TO ~90 SECONDS", PROC_SUB, true);
+  // Reservation-specific: browser-driven, can take up to ~90s.
+  const RESERVE_SUB = "browser flow is serialized server-side — please hold";
+  const workingBanner = (t) => banner("proc", t || "WORKING… THIS CAN TAKE UP TO ~90 SECONDS", RESERVE_SUB, true);
   function errBanner(e) {
     if (e instanceof BB.ApiError && (e.status === 503 || e.status === 429))
       return banner("warn", "SERVER BUSY — TRY AGAIN SHORTLY", `retry after ~${e.retryAfter}s · ${e.status === 429 ? "rate limited" : "back-pressure"}`);
@@ -120,6 +123,8 @@
     return centers;
   }
   const nearestIndex = (cs, v) => { let bi = 0, bd = Infinity; cs.forEach((c, i) => { const d = Math.abs(c - v); if (d < bd) { bd = d; bi = i; } }); return bi; };
+  // Normalises both TripSeat {numero, disponivel, posX, posY}
+  // and SeatInfo {number, available} shapes into a common form.
   const normSeat = (s) => ({
     num: s.numero != null ? s.numero : s.number,
     avail: s.disponivel != null ? s.disponivel : s.available,
@@ -260,7 +265,8 @@
       id: "searchUrl", rows: "3", autocapitalize: "off", autocomplete: "off", spellcheck: "false",
       placeholder: "https://mobifacil.com.br/passagem-de-onibus/…?origin=…&destination=…&date=dd-mm-yyyy…",
     });
-    const searchBtn = el("button", { class: "btn browser-action", id: "searchBtn", type: "button", text: "▶ Search" });
+    // Not a browser-action: search no longer holds the browser lock.
+    const searchBtn = el("button", { class: "btn", id: "searchBtn", type: "button", text: "▶ Search" });
     root.append(
       el("div", { class: "section" }, [
         el("div", { class: "legend" }, [el("span", { class: "idx", text: "01" }), "Traject input"]),
@@ -288,18 +294,20 @@
     const status = $("#searchStatus");
     status.innerHTML = "";
     if (!url) { status.appendChild(banner("warn", "NO URL", "paste a mobifacil passage link first")); return; }
-    setBrowserBusy(true);
-    status.appendChild(workingBanner("SEARCHING TRIPS… ONE PAGE FETCH PER TRIP, CAN TAKE A WHILE"));
+    // Search is now a plain HTTP call (~2s) — no browser lock needed.
+    const btn = $("#searchBtn");
+    btn.disabled = true;
+    status.appendChild(banner("proc", "SEARCHING TRIPS…", "fetching mobifacil route HTML", true));
     try {
       const res = await BB.search(url);
-      state.search = res; state.trip = null; state.seat = null; state.activeFloor = 0;
+      state.search = res; state.trip = null; state.seat = null; state.seatMap = null; state.activeFloor = 0;
       status.innerHTML = "";
       const n = (res.trips || []).length;
-      status.appendChild(banner("ok", `${n} TRIP${n === 1 ? "" : "S"} RESOLVED`, `route ${res.origin_id} → ${res.destination_id} · ${res.date}`));
+      status.appendChild(banner("ok", `${n} TRIP${n === 1 ? "" : "S"} FOUND`, `route ${res.origin_id} → ${res.destination_id} · ${res.date}`));
       renderTrips();
     } catch (e) {
       status.innerHTML = ""; status.appendChild(errBanner(e));
-    } finally { setBrowserBusy(false); }
+    } finally { btn.disabled = false; }
   }
 
   function renderTrips() {
@@ -308,58 +316,117 @@
     const trips = (state.search && state.search.trips) || [];
     if (!trips.length) { list.appendChild(el("div", { class: "empty", text: "NO TRIPS RETURNED FOR THIS ROUTE" })); return; }
     trips.forEach((t) => {
-      const seats = t.seats || [];
-      const floors = splitFloors(seats);
-      const free = freeCount(seats);
+      // Build meta line: service class, duration, floor count
+      const metaParts = [t.service_class];
+      if (t.duration) metaParts.push(t.duration);
+      if (t.has_second_floor) metaParts.push("2 pisos");
+
       const card = el("button", { class: "trip", type: "button", "aria-pressed": state.trip === t ? "true" : "false" }, [
-        el("div", { class: "toprow" }, [el("span", { class: "co", text: t.company }), el("span", { class: "price", text: "R$" + t.price })]),
+        el("div", { class: "toprow" }, [
+          el("span", { class: "co", text: t.company }),
+          el("span", { class: "price", text: t.price ? "R$" + t.price : "—" }),
+        ]),
         el("div", { class: "timerow" }, [
           el("span", { class: "clock", text: t.departure }),
           el("span", { class: "arrow", text: "→" }),
           el("span", { class: "clock", text: t.arrival }),
         ]),
         el("div", { class: "meta" }, [
-          el("span", { text: t.service_class + (floors.length > 1 ? " · " + floors.length + " pisos" : "") }),
-          el("span", { class: "avail", text: `${free}/${seats.length} free` }),
+          el("span", { text: metaParts.join(" · ") }),
+          // available_seats from lsServicos (accurate count without calling BusDetails)
+          el("span", { class: "avail", text: `${t.available_seats} free` }),
         ]),
-        buildMiniMap(seats),
       ]);
-      card.addEventListener("click", () => { state.trip = t; state.seat = null; state.activeFloor = 0; renderTrips(); renderSeatSection(); });
+      card.addEventListener("click", () => {
+        // Reset seatMap so the next section fetch is fresh for this trip.
+        state.trip = t; state.seat = null; state.seatMap = null; state.activeFloor = 0;
+        renderTrips();
+        renderSeatSection();
+      });
       list.appendChild(card);
     });
   }
 
-  function renderSeatSection() {
+  async function renderSeatSection() {
     const sec = $("#seatSec");
     const t = state.trip;
     if (!t) { sec.classList.add("hidden"); sec.innerHTML = ""; return; }
+
     sec.classList.remove("hidden"); sec.innerHTML = "";
     sec.appendChild(el("div", { class: "legend" }, [el("span", { class: "idx", text: "03" }), "Seat select"]));
     sec.appendChild(el("div", { class: "readout", style: "margin-bottom:12px" }, [
-      kv("Service", el("span", { class: "v wrap", text: t.company + " · " + t.service_class })),
-      kv("Depart", el("span", { class: "v seg7", text: t.departure })),
-      kv("Service ID", el("span", { class: "v", text: t.service_id })),
+      kv("Service",  el("span", { class: "v wrap", text: t.company + " · " + t.service_class })),
+      kv("Depart",   el("span", { class: "v seg7", text: t.departure })),
+      kv("Arrive",   el("span", { class: "v seg7", text: t.arrival })),
+      t.duration ? kv("Duration", el("span", { class: "v", text: t.duration })) : null,
     ]));
-    sec.appendChild(buildSeatMap(t.seats || [], {
+
+    const seatArea = el("div", { id: "seatArea" });
+    const reserveSec = el("div", { id: "reserveSec" });
+    sec.append(seatArea, reserveSec);
+
+    // Use cached seat map if this trip's data is already loaded.
+    if (state.seatMap) {
+      renderSeatPicker(seatArea, reserveSec);
+      return;
+    }
+
+    // Fetch live seat map from /seats.
+    const s = state.search;
+    seatArea.appendChild(banner("proc", "READING SEAT MAP…", "fetching live seat data", true));
+    setBrowserBusy(true);
+    try {
+      const seatsRes = await BB.getSeats({
+        origin_id: s.origin_id, destination_id: s.destination_id,
+        date: s.date, departure: t.departure,
+      });
+      // SeatInfo {number, available} → normSeat-compatible shape.
+      // No position data from /seats; gridMap falls back to sequential layout.
+      state.seatMap = seatsRes.seats || [];
+      seatArea.innerHTML = "";
+      renderSeatPicker(seatArea, reserveSec);
+    } catch (e) {
+      seatArea.innerHTML = "";
+      seatArea.appendChild(errBanner(e));
+    } finally {
+      setBrowserBusy(false);
+    }
+  }
+
+  function renderSeatPicker(seatArea, reserveSec) {
+    seatArea.innerHTML = "";
+    seatArea.appendChild(buildSeatMap(state.seatMap || [], {
       selected: state.seat, activeFloor: state.activeFloor,
       onFloor: (i) => { state.activeFloor = i; },
-      onPick: (num) => { state.seat = num; renderSeatSection(); },
+      onPick: (num) => { state.seat = num; renderReserveControl(reserveSec); },
     }));
-    sec.appendChild(el("div", { class: "seatlegend" }, [
+    seatArea.appendChild(el("div", { class: "seatlegend" }, [
       el("span", {}, [el("i", { class: "a" }), "free"]),
       el("span", {}, [el("i", { class: "t" }), "taken"]),
       el("span", {}, [el("i", { class: "s" }), "selected"]),
     ]));
-    sec.appendChild(el("div", { class: "divider" }));
-    sec.appendChild(el("div", { class: "readout", style: "margin:10px 0" }, [
-      el("div", { class: "kv" }, [el("span", { class: "k", text: "Seat armed" }), el("span", { class: "v seg7", style: "font-size:22px", text: state.seat || "--" })]),
-    ]));
+    renderReserveControl(reserveSec);
+  }
+
+  function renderReserveControl(reserveSec) {
+    reserveSec.innerHTML = "";
+    reserveSec.append(
+      el("div", { class: "divider" }),
+      el("div", { class: "readout", style: "margin:10px 0" }, [
+        el("div", { class: "kv" }, [
+          el("span", { class: "k", text: "Seat armed" }),
+          el("span", { class: "v seg7", style: "font-size:22px", text: state.seat || "--" }),
+        ]),
+      ])
+    );
     const reserveBtn = el("button", { class: "btn browser-action", id: "reserveBtn", type: "button" }, "■ Reserve seat");
     reserveBtn.disabled = !state.seat || state.browserBusy;
     reserveBtn.dataset.forceDisabled = state.seat ? "0" : "1";
-    sec.appendChild(reserveBtn);
-    sec.appendChild(el("p", { class: "note", text: "Reserve drives a live browser at the provider. Submit is disabled until the call returns — the endpoint is not idempotent." }));
-    sec.appendChild(el("div", { id: "reserveStatus", class: "spaced", style: "margin-top:12px" }));
+    reserveSec.append(
+      reserveBtn,
+      el("p", { class: "note", text: "Reserve drives a live browser at the provider. Submit is disabled until the call returns — the endpoint is not idempotent." }),
+      el("div", { id: "reserveStatus", class: "spaced", style: "margin-top:12px" })
+    );
     reserveBtn.addEventListener("click", doReserve);
   }
 

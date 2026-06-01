@@ -156,7 +156,7 @@
     const scanBtn = el("button", { class: "btn verb browser-action", id: "mon-scan", type: "button", text: "◎ Scan bus occupancy" });
     const bus = el("div", { class: "section" }, [
       el("div", { class: "legend" }, [el("span", { class: "idx", text: "03" }), "Bus occupancy"]),
-      el("p", { class: "note", id: "mon-busnote", text: "Browser-driven live read of the current seat map for this route. Rescan manually — the endpoint is slow and serialized." }),
+      el("p", { class: "note", id: "mon-busnote", text: "Live read of the current seat map for this route. Rescan to refresh." }),
       scanBtn,
       el("div", { id: "mon-busbody", class: "spaced", style: "margin-top:12px" }),
     ]);
@@ -272,11 +272,12 @@
     const note = $("#mon-busnote"); const out = $("#mon-busbody");
     out.innerHTML = "";
     U.setBrowserBusy(true);
-    out.appendChild(banner("proc", "READING SEAT MAP… UP TO ~90 SECONDS", "browser-driven · serialized", true));
+    out.appendChild(banner("proc", "READING SEAT MAP…", "fetching live seat data", true));
     appendLog("SEAT-MAP SCAN REQUESTED", "");
     try {
       const res = await BB.getSeats({ origin_id: r.origin_id, destination_id: r.destination_id, date: r.date, departure: r.departure });
-      M.seats = (res.seats || []).map((s) => ({ numero: s.number, disponivel: s.available, posX: s.posX, posY: s.posY }));
+      // SeatInfo shape: {number, available} — normSeat handles both this and TripSeat.
+      M.seats = res.seats || [];
       M.total = res.total; M.avail = res.available;
       M.history = [res.available];
       out.innerHTML = "";
