@@ -19,7 +19,7 @@ sys.path.insert(0, ".")
 from playwright.sync_api import sync_playwright
 
 from core.config import settings
-from core.services.browser import build_context, check_detection, jitter
+from core.services.browser import check_detection, jitter
 from core.services.trip import _parse_all_trips
 from core.utils.logger import log
 
@@ -27,14 +27,27 @@ from core.utils.logger import log
 def run(search_url: str) -> int:
     """Returns 0 on all-pass, 1 on any failure."""
     with sync_playwright() as pw:
-        ctx = build_context(pw)
+        ctx = pw.chromium.launch_persistent_context(
+            user_data_dir="./browser_profile_test",
+            headless=True,
+            locale="pt-BR",
+            timezone_id="America/Sao_Paulo",
+            user_agent=(
+                "Mozilla/5.0 (Windows NT 10.0; Win64; x64) "
+                "AppleWebKit/537.36 (KHTML, like Gecko) "
+                "Chrome/147.0.0.0 Safari/537.36"
+            ),
+            args=["--disable-blink-features=AutomationControlled", "--no-sandbox",
+                  "--disable-dev-shm-usage"],
+            ignore_default_args=["--enable-automation"],
+        )
         page = ctx.new_page()
         try:
             print(f"\nLoading search page …")
             t0 = time.monotonic()
-            page.goto(search_url, wait_until="networkidle", timeout=60_000)
+            page.goto(search_url, wait_until="load", timeout=60_000)
             check_detection(page, "search")
-            page.wait_for_selector(".listTripsCard", timeout=15_000)
+            page.wait_for_selector(".listTripsCard", timeout=30_000)
             page_load_s = time.monotonic() - t0
             print(f"  page load:  {page_load_s:.1f}s")
 
