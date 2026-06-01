@@ -65,7 +65,7 @@ def _confirm_via_api(page: Page, trip: dict, params: RouteParams) -> Optional[bo
         "date": params.date, "returnDate": "", "step": "1",
         "isStudent": "false", "isPCD": "false", "isAjax": "true",
         "empresaId": trip.get("empresaId", ""), "raceDate": params.date,
-        "departureHour": params.departure, "arrivalHour": trip.get("arrivalHour", "11:30"),
+        "departureHour": params.departure, "arrivalHour": trip.get("arrivalHour", ""),
         "isMobioferta": "false",
     }
     resp = page.request.get(

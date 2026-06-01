@@ -2,17 +2,25 @@
 Playwright-free path for /search and /seats.
 
 The mobifacil search page is server-rendered: all trip metadata (lsServicos)
-is embedded in the <list-trips :data="..."> attribute of the initial HTML
-response. No JS execution or browser session needed to get the trip list.
+is embedded in the <list-trips :data="..."> Vue attribute of the initial HTML
+response. No JS execution or browser session is needed to get the trip list.
 
-BusDetails (seat maps) are only loaded on card click in the real site, but
-the URL is fully constructable from lsServicos fields. We call it directly
-with httpx once per trip, using the same parameters the browser would send.
+Key fields available in lsServicos (no BusDetails required):
+  saida / chegada  → departure / arrival times
+  empresa          → company name
+  preco            → price
+  classe           → service class
+  poltronasLivres  → available seat count
+  duration         → human-readable duration ("1h40")
+  fareId/fareCode  → needed to construct the BusDetails URL
+  empresaId/rutaId → needed for lock payload
 
-Flow:
-  1. httpx GET search URL  →  parse lsServicos from HTML   (~2s, no browser)
-  2. For each trip: construct + call BusDetails URL         (~1s each, parallel-safe)
-  3. Merge: price from lsServicos, seatMap from BusDetails
+BusDetails adds: full seatMap with per-seat availability and hasSecondFloor.
+It is only called when individual seat data is needed (/seats endpoint).
+
+Flow for /search:   httpx GET HTML  →  parse lsServicos  (~2s, no browser)
+Flow for /seats:    httpx GET HTML  →  BusDetails for target trip  (~3s)
+Booking flow:       Playwright only (unchanged) — needs session for LockSeat
 """
 from __future__ import annotations
 
@@ -77,8 +85,8 @@ def fetch_lsservicos(search_url: str) -> list[dict]:
 
 
 def _parse_lsservicos(html_content: str) -> list[dict]:
-    # The Vue component attribute :data="..." contains HTML-encoded JSON.
-    # All internal " are &quot; so a simple [^"]+ match works safely.
+    # The Vue :data="..." attribute contains HTML-encoded JSON.
+    # All internal quotes are &quot;, so a [^"]+ match safely captures the value.
     m = re.search(r':data="([^"]+)"', html_content)
     if not m:
         log.warning("[htmlsearch] :data attribute not found — page structure may have changed")
@@ -94,13 +102,114 @@ def _parse_lsservicos(html_content: str) -> list[dict]:
 
 
 # ─────────────────────────────────────────────────────────────────
+# Seat-map flattening (shared by both search and seats paths)
+# ─────────────────────────────────────────────────────────────────
+
+def _seats_from_map(seat_map: list) -> list[dict]:
+    """
+    Flatten seatMap into TripSeat-compatible dicts.
+    BusDetails uses x/y for grid position; posX/posY are used as output names
+    to match the TripSeat schema. Both field names are checked on input.
+    """
+    seats: list[dict] = []
+    for row in seat_map:
+        if not isinstance(row, list):
+            continue
+        for seat in row:
+            if not isinstance(seat, dict):
+                continue
+            numero = str(seat.get("numero", "")).strip()
+            if not numero or numero == "-99":
+                continue
+            try:
+                pos_x = float(seat.get("posX") or seat.get("x") or 0)
+                pos_y = float(seat.get("posY") or seat.get("y") or 0)
+            except (TypeError, ValueError):
+                pos_x = pos_y = 0.0
+            seats.append({
+                "numero": numero,
+                "disponivel": bool(seat.get("disponivel", False)),
+                "posX": pos_x,
+                "posY": pos_y,
+            })
+    return seats
+
+
+# ─────────────────────────────────────────────────────────────────
+# Trip dict builders
+# ─────────────────────────────────────────────────────────────────
+
+def lsservicos_to_search_dict(ls_trip: dict) -> dict:
+    """
+    Build a TripResult-compatible dict from a single lsServicos entry.
+    No BusDetails call needed — lsServicos has all fields required for
+    trip listing (price, times, company, class, free-seat count, duration).
+    Individual seat maps are NOT included; use /seats for that.
+    """
+    saida = ls_trip.get("saida", "")      # "02/06/2026 05:00"
+    chegada = ls_trip.get("chegada", "")  # "02/06/2026 06:40"
+    dep_hour = saida.rsplit(" ", 1)[-1] if " " in saida else saida
+    arr_hour = chegada.rsplit(" ", 1)[-1] if " " in chegada else chegada
+
+    # serviceId is the bare number part of servico ("584711-...-FARE-1" → "584711")
+    servico = ls_trip.get("servico", "")
+    service_id = servico.split("-")[0] if servico else ""
+
+    return {
+        "service_id": service_id,
+        "departure": dep_hour,
+        "arrival": arr_hour,
+        "company": ls_trip.get("empresa", ""),
+        "price": str(ls_trip.get("preco", "") or ""),
+        "service_class": ls_trip.get("classe", ""),
+        "duration": ls_trip.get("duration", ""),
+        "available_seats": int(ls_trip.get("poltronasLivres", 0) or 0),
+        "has_second_floor": False,  # not available in lsServicos; comes from BusDetails
+        "seats": [],
+    }
+
+
+def bus_details_to_search_dict(ls_trip: dict, bus_data: dict) -> Optional[dict]:
+    """
+    Build a TripResult-compatible dict merging lsServicos metadata with BusDetails
+    seat data. Use when individual seat availability is required alongside trip info.
+    Price and duration come from lsServicos (BusDetails returns null for price).
+    """
+    trips = bus_data.get("details", {}).get("trip", [])
+    if not trips:
+        return None
+    t = trips[0]
+    sid = str(t.get("serviceId", "")).strip()
+    if not sid:
+        return None
+
+    saida = ls_trip.get("saida", "")
+    chegada = ls_trip.get("chegada", "")
+    dep_hour = saida.rsplit(" ", 1)[-1] if " " in saida else saida
+    arr_hour = chegada.rsplit(" ", 1)[-1] if " " in chegada else chegada
+
+    return {
+        "service_id": sid,
+        "departure": str(t.get("departureHour", dep_hour)).strip(),
+        "arrival": str(t.get("arrivalHour", arr_hour)).strip(),
+        "company": str(t.get("company", "") or ls_trip.get("empresa", "")),
+        "price": str(ls_trip.get("preco", "") or ""),
+        "service_class": str(t.get("serviceClass", "") or ls_trip.get("classe", "")),
+        "duration": ls_trip.get("duration", ""),
+        "available_seats": int(ls_trip.get("poltronasLivres", 0) or 0),
+        "has_second_floor": bool(t.get("hasSecondFloor", False)),
+        "seats": _seats_from_map(t.get("seatMap", [])),
+    }
+
+
+# ─────────────────────────────────────────────────────────────────
 # BusDetails URL construction
 # ─────────────────────────────────────────────────────────────────
 
 def build_bus_details_url(ls_trip: dict, date: str) -> str:
     """
     Construct the BusDetails URL from a lsServicos trip entry.
-    All parameters come from the HTML — the same values the browser sends
+    All parameters come from the HTML — identical to what the browser sends
     when a trip card is clicked.
     """
     saida = ls_trip.get("saida", "")      # "02/06/2026 05:00"
@@ -109,44 +218,44 @@ def build_bus_details_url(ls_trip: dict, date: str) -> str:
     arr_hour = chegada.rsplit(" ", 1)[-1] if " " in chegada else ""
 
     params: dict[str, str] = {
-        "hasConnection":           str(ls_trip.get("hasConnection", False)).lower(),
-        "offerId":                 ls_trip.get("offerId") or "",
-        "offerBundle":             "",
-        "isDistribusion":          str(ls_trip.get("isDistribusion", True)).lower(),
-        "multipleFares":           str(ls_trip.get("multipleFares", False)).lower(),
-        "origin":                  str(ls_trip.get("originId", "")),
-        "originIdDistribusion":    str(ls_trip.get("originIdDistribusion") or ls_trip.get("originId", "")),
-        "originName":              ls_trip.get("originName", ""),
-        "destinationIdDistribusion": str(ls_trip.get("destinationIdDistribusion") or ls_trip.get("destinationId", "")),
-        "destination":             str(ls_trip.get("destinationId", "")),
-        "destinationName":         ls_trip.get("destinationName", ""),
-        "arrivalStation":          str(ls_trip.get("arrivalStation") or ls_trip.get("destinationId", "")),
-        "fareId":                  ls_trip.get("fareId", ""),
-        "fareCode":                ls_trip.get("fareCode", ""),
-        "fareCodeFirstTrip":       ls_trip.get("fareCodeFirstTrip") or "",
-        "fareCodeSecondTrip":      ls_trip.get("fareCodeSecondTrip") or "",
-        "group":                   ls_trip.get("grupo", "TOTAL_BUS"),
-        "service":                 ls_trip.get("servico", ""),
-        "preco":                   str(ls_trip.get("preco", "")),
-        "date":                    date,
-        "returnDate":              "",
-        "step":                    "1",
-        "isStudent":               "false",
-        "isPCD":                   "false",
-        "class":                   ls_trip.get("classe", ""),
-        "arr":                     ls_trip.get("arr", ""),
-        "isAjax":                  "true",
-        "company":                 ls_trip.get("empresa", ""),
-        "saida":                   saida,
-        "rutaId":                  str(ls_trip.get("rutaId", 0)),
-        "empresaId":               str(ls_trip.get("empresaId", "")),
-        "connection":              "",
-        "raceDate":                date,
-        "chegada":                 chegada,
-        "departureHour":           dep_hour,
-        "arrivalHour":             arr_hour,
-        "position":                "0",
-        "isMobioferta":            str(ls_trip.get("isMobioferta", False)).lower(),
+        "hasConnection":              str(ls_trip.get("hasConnection", False)).lower(),
+        "offerId":                    str(ls_trip.get("offerId") or ""),
+        "offerBundle":                "",
+        "isDistribusion":             str(ls_trip.get("isDistribusion", True)).lower(),
+        "multipleFares":              str(ls_trip.get("multipleFares", False)).lower(),
+        "origin":                     str(ls_trip.get("originId", "")),
+        "originIdDistribusion":       str(ls_trip.get("originIdDistribusion") or ls_trip.get("originId", "")),
+        "originName":                 ls_trip.get("originName", ""),
+        "destinationIdDistribusion":  str(ls_trip.get("destinationIdDistribusion") or ls_trip.get("destinationId", "")),
+        "destination":                str(ls_trip.get("destinationId", "")),
+        "destinationName":            ls_trip.get("destinationName", ""),
+        "arrivalStation":             str(ls_trip.get("arrivalStation") or ls_trip.get("destinationId", "")),
+        "fareId":                     ls_trip.get("fareId", ""),
+        "fareCode":                   ls_trip.get("fareCode", ""),
+        "fareCodeFirstTrip":          str(ls_trip.get("fareCodeFirstTrip") or ""),
+        "fareCodeSecondTrip":         str(ls_trip.get("fareCodeSecondTrip") or ""),
+        "group":                      ls_trip.get("grupo", "TOTAL_BUS"),
+        "service":                    ls_trip.get("servico", ""),
+        "preco":                      str(ls_trip.get("preco", "")),
+        "date":                       date,
+        "returnDate":                 "",
+        "step":                       "1",
+        "isStudent":                  "false",
+        "isPCD":                      "false",
+        "class":                      ls_trip.get("classe", ""),
+        "arr":                        ls_trip.get("arr", ""),
+        "isAjax":                     "true",
+        "company":                    ls_trip.get("empresa", ""),
+        "saida":                      saida,
+        "rutaId":                     str(ls_trip.get("rutaId", 0)),
+        "empresaId":                  str(ls_trip.get("empresaId", "")),
+        "connection":                 "",
+        "raceDate":                   date,
+        "chegada":                    chegada,
+        "departureHour":              dep_hour,
+        "arrivalHour":                arr_hour,
+        "position":                   "0",
+        "isMobioferta":               str(ls_trip.get("isMobioferta", False)).lower(),
     }
     return settings.base_url + BUS_DETAILS_PATH + "?" + urllib.parse.urlencode(params)
 
@@ -156,7 +265,7 @@ def build_bus_details_url(ls_trip: dict, date: str) -> str:
 # ─────────────────────────────────────────────────────────────────
 
 def fetch_bus_details(url: str) -> Optional[dict]:
-    """httpx GET a BusDetails URL, return the JSON body or None on failure."""
+    """httpx GET a BusDetails URL, return the parsed JSON body or None on failure."""
     try:
         with httpx.Client(timeout=15, follow_redirects=True) as client:
             resp = client.get(url, headers=_JSON_HEADERS)
@@ -171,96 +280,3 @@ def fetch_bus_details(url: str) -> Optional[dict]:
     except Exception as exc:
         log.warning(f"[htmlsearch] BusDetails error: {exc!r}")
         return None
-
-
-# ─────────────────────────────────────────────────────────────────
-# Trip dict builder (merges lsServicos price with BusDetails seats)
-# ─────────────────────────────────────────────────────────────────
-
-def _seats_from_map(seat_map: list) -> list[dict]:
-    seats = []
-    for row in seat_map:
-        if not isinstance(row, list):
-            continue
-        for seat in row:
-            if not isinstance(seat, dict):
-                continue
-            numero = str(seat.get("numero", "")).strip()
-            if not numero or numero == "-99":
-                continue
-            try:
-                pos_x = float(seat.get("posX", seat.get("x", 0)) or 0)
-                pos_y = float(seat.get("posY", seat.get("y", 0)) or 0)
-            except (TypeError, ValueError):
-                pos_x = pos_y = 0.0
-            seats.append({
-                "numero": numero,
-                "disponivel": bool(seat.get("disponivel", False)),
-                "posX": pos_x,
-                "posY": pos_y,
-            })
-    return seats
-
-
-def bus_details_to_search_dict(ls_trip: dict, bus_data: dict) -> Optional[dict]:
-    """
-    Merge lsServicos metadata with BusDetails seat data.
-    Price comes from lsServicos (BusDetails returns null for price).
-    seatMap comes from BusDetails (not in lsServicos).
-    """
-    trips = bus_data.get("details", {}).get("trip", [])
-    if not trips:
-        return None
-    t = trips[0]
-    sid = str(t.get("serviceId", "")).strip()
-    if not sid:
-        return None
-    return {
-        "service_id": sid,
-        "departure":     str(t.get("departureHour", "")).strip(),
-        "arrival":       str(t.get("arrivalHour", "")).strip(),
-        "company":       str(t.get("company", "") or ls_trip.get("empresa", "")),
-        "price":         str(ls_trip.get("preco", "") or ""),
-        "service_class": str(t.get("serviceClass", "") or ls_trip.get("classe", "")),
-        "seats":         _seats_from_map(t.get("seatMap", [])),
-    }
-
-
-def bus_details_to_trip_dict(ls_trip: dict, bus_data: dict) -> Optional[dict]:
-    """
-    Build a full trip dict for the booking flow (same shape as resolve_trip output).
-    Only needed if we want to replace resolve_trip for /seats.
-    """
-    trips = bus_data.get("details", {}).get("trip", [])
-    if not trips:
-        return None
-    t = trips[0]
-    sid = str(t.get("serviceId", "") or "")
-    fare_id = str(t.get("fareId", "") or ls_trip.get("fareId", ""))
-    fare_code = fare_id.split("-", 1)[1] if "-" in fare_id else "FARE-1"
-    return {
-        "serviceId":     sid,
-        "fareId":        fare_id,
-        "fareCode":      fare_code,
-        "empresaId":     str(t.get("empresaId", "") or ls_trip.get("empresaId", "")),
-        "departureHour": str(t.get("departureHour", "")),
-        "arrivalHour":   str(t.get("arrivalHour", "")),
-        "service":       str(ls_trip.get("servico", "")),
-        "seatMap":       t.get("seatMap", []),
-        "preco":         str(ls_trip.get("preco", "") or ""),
-        "company":       str(t.get("company", "") or ls_trip.get("empresa", "")),
-        "originId":      str(ls_trip.get("originId", "")),
-        "destinationId": str(ls_trip.get("destinationId", "")),
-        "group":         str(ls_trip.get("grupo", "TOTAL_BUS")),
-        "raceDate":      str(t.get("raceDate", "") or ls_trip.get("dataCorrida", "")),
-        "rutaId":        str(ls_trip.get("rutaId", "")),
-        "serviceClass":  str(t.get("serviceClass", "") or ls_trip.get("classe", "")),
-        "originUf":      str(t.get("originUf", "")),
-        "stepNumber":    str(t.get("stepNumber", "1")),
-        "offerId":       str(t.get("offerId", "") or ""),
-        "connectionId":  str(t.get("connectionId", "") or ""),
-        "isDistribusion": str(ls_trip.get("isDistribusion", True)),
-        "seatsWithPrice": t.get("seatsWithPrice", ""),
-        "departure":     str(t.get("departure", t.get("departureHour", ""))),
-        "arrival":       str(t.get("arrival", t.get("arrivalHour", ""))),
-    }

@@ -200,6 +200,9 @@ class TripResult(BaseModel):
     company: str
     price: str
     service_class: str
+    duration: str = ""
+    available_seats: int = 0
+    has_second_floor: bool = False
     seats: list[TripSeat] = Field(default_factory=list)
 
 

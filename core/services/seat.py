@@ -248,7 +248,7 @@ def _build_lock_payload(trip: dict, params: RouteParams) -> dict:
         "departureHour": params.departure,
         "group": trip.get("group", "TOTAL_BUS"),
         "seat": params.seat,
-        "arrival": trip.get("arrival", trip.get("arrivalHour", "11:30")),
+        "arrival": trip.get("arrival", trip.get("arrivalHour", "")),
         "company": trip.get("company", ""),
         "departure": trip.get("departure", params.departure),
         "originUf": trip.get("originUf", ""),

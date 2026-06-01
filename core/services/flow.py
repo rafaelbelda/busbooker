@@ -227,30 +227,16 @@ def fetch_seat_map(params: RouteParams) -> list[SeatInfo]:
 
 def search_trips(params: RouteParams) -> list[dict]:
     """
-    Playwright-free search: HTML parse + direct BusDetails calls per trip.
-    Replaces the old open_search_page + resolve_all_trips browser flow.
+    Playwright-free search: HTML parse only — no BusDetails calls needed.
+    lsServicos already contains price, times, company, class, available seat
+    count and duration. Individual seat maps belong to /seats, not /search.
     """
-    from .htmlsearch import (
-        build_bus_details_url,
-        bus_details_to_search_dict,
-        fetch_bus_details,
-        fetch_lsservicos,
-    )
+    from .htmlsearch import fetch_lsservicos, lsservicos_to_search_dict
 
     lsservicos = fetch_lsservicos(params.search_url)
     if not lsservicos:
         raise RuntimeError("no trips found in search page HTML")
 
-    collected: dict[str, dict] = {}
-    for ls_trip in lsservicos:
-        url = build_bus_details_url(ls_trip, params.date)
-        bus_data = fetch_bus_details(url)
-        if not bus_data:
-            continue
-        result = bus_details_to_search_dict(ls_trip, bus_data)
-        if result and result["service_id"] not in collected:
-            collected[result["service_id"]] = result
-        jitter(200, 500)
-
-    log.info(f"[search_fast] {len(collected)} trips resolved")
-    return list(collected.values())
+    results = [lsservicos_to_search_dict(t) for t in lsservicos]
+    log.info(f"[search] {len(results)} trips from HTML")
+    return results

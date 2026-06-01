@@ -11,7 +11,7 @@ from typing import Callable, Optional, Tuple
 
 from playwright.sync_api import Page, Response
 
-from ..config import BUS_DETAILS_PATH, settings
+from ..config import BUS_DETAILS_PATH
 from ..models.schemas import RouteParams
 from ..utils.logger import log
 from .browser import (
@@ -58,7 +58,6 @@ def open_search_page(page: Page, telemetry: TelemetryWatcher, params: RouteParam
         log.info(f"[step 1] session cookies: {dw}")
         try:
             page.wait_for_selector(".listTripsCard", timeout=30_000)
-            page.wait_for_timeout(2000)
             log.info("[step 1] trip list rendered")
         except Exception as exc:  # FIX (bug 2): no bare except
             raise RuntimeError("Trip list not rendered") from exc
@@ -106,16 +105,21 @@ def _parse_bus_details(data: dict, params: RouteParams) -> Optional[dict]:
     fare_code = fare_id.split("-", 1)[1] if "-" in fare_id else "FARE-1"
     empresa_id = str(empresa_raw) if empresa_raw is not None else ""
 
+    arr_hour = trip.get("arrivalHour", "")
     return {
         "serviceId": sid,
         "fareId": fare_id,
         "fareCode": fare_code,
         "empresaId": empresa_id,
         "departureHour": dep,
-        "arrivalHour": trip.get("arrivalHour", "11:30"),
+        "arrivalHour": arr_hour,
+        # arrival is time-only (used in lock payload); BusDetails "arrival" is a
+        # full datetime string which the LockSeat API does not expect.
+        "arrival": arr_hour,
         "service": f"{sid}-{params.date}T{params.departure}-{fare_code}",
         "seatMap": trip.get("seatMap", []),
-        "preco": str(trip.get("price") or "130.55"),
+        "hasSecondFloor": bool(trip.get("hasSecondFloor", False)),
+        "preco": str(trip.get("price") or ""),
         "company": trip.get("company", ""),
         "originId": str(trip.get("originId", params.origin_id)),
         "destinationId": str(trip.get("destinationId", params.destination_id)),
@@ -127,10 +131,11 @@ def _parse_bus_details(data: dict, params: RouteParams) -> Optional[dict]:
         "stepNumber": str(trip.get("stepNumber", "1")),
         "offerId": str(trip.get("offerId", "")),
         "connectionId": str(trip.get("connectionId", "")),
-        "isDistribusion": str(trip.get("isDistribusion", "true")),
+        # isDistribusion is a Python bool from BusDetails; str(True) = "True"
+        # which the server rejects — always lower-case.
+        "isDistribusion": str(trip.get("isDistribusion", True)).lower(),
         "seatsWithPrice": trip.get("seatsWithPrice", ""),
         "departure": trip.get("departure", dep),
-        "arrival": trip.get("arrival", trip.get("arrivalHour", "11:30")),
     }
 
 
@@ -278,130 +283,3 @@ def resolve_trip(page: Page, params: RouteParams) -> dict:
         log.warning(f"[step 2] {label}: intercept not captured")
 
     raise RuntimeError("Trip resolution failed after retry")
-
-
-# ─────────────────────────────────────────────────────────────────
-# URL search — resolve ALL trips for a route/date (used by POST /search)
-# ─────────────────────────────────────────────────────────────────
-def _seats_from_map(seat_map: list) -> list[dict]:
-    """Flatten a seatMap into [{numero, disponivel, posX, posY}, ...]."""
-    seats: list[dict] = []
-    for row in seat_map:
-        if not isinstance(row, list):
-            continue
-        for seat in row:
-            if not isinstance(seat, dict):
-                continue
-            numero = str(seat.get("numero", "")).strip()
-            if not numero or numero == "-99":
-                continue
-            try:
-                pos_x = float(seat.get("posX", 0) or 0)
-                pos_y = float(seat.get("posY", 0) or 0)
-            except (TypeError, ValueError):
-                pos_x = pos_y = 0.0
-            seats.append(
-                {
-                    "numero": numero,
-                    "disponivel": bool(seat.get("disponivel", False)),
-                    "posX": pos_x,
-                    "posY": pos_y,
-                }
-            )
-    return seats
-
-
-def _trip_to_search_dict(t: dict) -> dict:
-    sid = str(t.get("serviceId", "")).strip()
-    return {
-        "service_id": sid,
-        "departure": str(t.get("departureHour", "")).strip(),
-        "arrival": str(t.get("arrivalHour", "")).strip(),
-        "company": str(t.get("company", "")),
-        "price": str(t.get("price") or ""),
-        "service_class": str(t.get("serviceClass", "")),
-        "seats": _seats_from_map(t.get("seatMap", [])),
-    }
-
-
-def _parse_all_trips(data: dict) -> list[dict]:
-    """Extract every trip in a BusDetails response (no departure filtering)."""
-    if not data.get("success"):
-        return []
-    out: list[dict] = []
-    for t in data.get("details", {}).get("trip", []):
-        if isinstance(t, dict) and t.get("serviceId") is not None:
-            out.append(_trip_to_search_dict(t))
-    return out
-
-
-def resolve_all_trips(page: Page, params: RouteParams) -> list[dict]:
-    """
-    Enumerate every non-sold-out trip card on the already-loaded search page and
-    fetch each one's BusDetails via page.request.get() — the data-urlbusdetails
-    attribute is the JSON API endpoint directly, so no browser navigation needed.
-    Returns trips de-duplicated by service_id.
-    """
-    cards = page.locator(".listTripsCard")
-    urls: list[str] = []
-    for i in range(cards.count()):
-        card = cards.nth(i)
-        try:
-            if "soldOut" in (card.get_attribute("class") or ""):
-                continue
-            url = card.get_attribute("data-urlbusdetails")
-            if url:
-                urls.append(url if url.startswith("http") else settings.base_url + url)
-        except Exception as exc:
-            log.debug(f"[search] card {i} skipped: {exc!r}")
-    log.info(f"[search] {len(urls)} trip detail URLs to fetch directly")
-
-    collected: dict[str, dict] = {}
-    for idx, url in enumerate(urls):
-        try:
-            resp = page.request.get(url, timeout=15_000)
-            if not resp.ok:
-                log.warning(f"[search] detail {idx} HTTP {resp.status}")
-                continue
-            data = resp.json()
-            for trip in _parse_all_trips(data):
-                sid = trip["service_id"]
-                if sid and sid not in collected:
-                    collected[sid] = trip
-            jitter(300, 800)
-        except Exception as exc:
-            log.warning(f"[search] detail {idx} failed: {exc!r}")
-
-    log.info(f"[search] resolved {len(collected)} trips")
-    return list(collected.values())
-
-
-def resolve_trip_direct(page: Page, params: RouteParams) -> dict:
-    """
-    Read-only fast path for /seats: extracts the matching trip's
-    data-urlbusdetails URL from the DOM and fetches BusDetails via
-    page.request.get() without navigating the browser.
-    Falls back to resolve_trip() if the URL isn't in the DOM or the request fails.
-    Not for use in the booking flow — lock_seat_ui() needs the browser on the trip page.
-    """
-    url = _extract_bus_url(page, params)
-    if not url:
-        log.warning("[step 2] no matching bus URL in DOM — falling back to resolve_trip")
-        return resolve_trip(page, params)
-
-    full_url = url if url.startswith("http") else settings.base_url + url
-    log.info(f"[step 2] direct fetch for departure={params.departure}")
-    try:
-        resp = page.request.get(full_url, timeout=15_000)
-        if not resp.ok:
-            raise RuntimeError(f"HTTP {resp.status}")
-        data = resp.json()
-        result = _parse_bus_details(data, params)
-        if result:
-            log.info(f"[step 2] direct fetch OK — serviceId={result['serviceId']}")
-            debug_seat_map_structure(result["seatMap"])
-            return result
-        raise RuntimeError("no matching trip in BusDetails response")
-    except Exception as exc:
-        log.warning(f"[step 2] direct fetch failed: {exc!r} — falling back to resolve_trip")
-        return resolve_trip(page, params)
