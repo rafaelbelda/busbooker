@@ -34,7 +34,7 @@ from .browser import (
 )
 from .checkout import confirm_seat_locked, proceed_to_checkout
 from .seat import check_seat_availability, lock_seat, parse_seat_map
-from .trip import open_search_page, resolve_all_trips, resolve_trip, resolve_trip_direct
+from .trip import open_search_page, resolve_trip
 
 
 # ─────────────────────────────────────────────────────────────────
@@ -192,43 +192,65 @@ def run_flow(params: RouteParams) -> tuple[int, dict | None]:
 
 
 def fetch_seat_map(params: RouteParams) -> list[SeatInfo]:
-    """Resolve the trip and return the live seat map (Steps 1-2 only)."""
-    if not _profile_looks_valid(settings.user_data_dir):
-        log.warning("[seats] profile missing — resetting")
-        reset_profile(settings.user_data_dir)
+    """
+    Playwright-free seat map fetch: HTML parse + direct BusDetails call.
+    No browser navigation needed — the search page is server-rendered.
+    """
+    from .htmlsearch import (
+        build_bus_details_url,
+        fetch_bus_details,
+        fetch_lsservicos,
+    )
 
-    with sync_playwright() as pw:
-        ctx = build_context(pw)
-        page = ctx.new_page()
-        telemetry = TelemetryWatcher(start_time=time.monotonic())
-        page.on("response", telemetry.on_response)
-        try:
-            open_search_page(page, telemetry, params)
-            trip = resolve_trip_direct(page, params)
-            return parse_seat_map(trip.get("seatMap", []))
-        finally:
-            try:
-                ctx.close()
-            except Exception:  # FIX (bug 2)
-                pass
+    lsservicos = fetch_lsservicos(params.search_url)
+    if not lsservicos:
+        raise RuntimeError("no trips found in search page HTML")
+
+    matching = next(
+        (t for t in lsservicos
+         if params.departure in (t.get("saida", "").rsplit(" ", 1) + [""])[-1]),
+        None,
+    )
+    if not matching:
+        raise RuntimeError(f"departure {params.departure} not in search results")
+
+    url = build_bus_details_url(matching, params.date)
+    bus_data = fetch_bus_details(url)
+    if not bus_data:
+        raise RuntimeError("BusDetails fetch failed")
+
+    trips = bus_data.get("details", {}).get("trip", [])
+    if not trips:
+        raise RuntimeError("BusDetails returned no trip data")
+    return parse_seat_map(trips[0].get("seatMap", []))
 
 
 def search_trips(params: RouteParams) -> list[dict]:
-    """Open the search page and resolve every trip + its seats (used by /search)."""
-    if not _profile_looks_valid(settings.user_data_dir):
-        log.warning("[search] profile missing — resetting")
-        reset_profile(settings.user_data_dir)
+    """
+    Playwright-free search: HTML parse + direct BusDetails calls per trip.
+    Replaces the old open_search_page + resolve_all_trips browser flow.
+    """
+    from .htmlsearch import (
+        build_bus_details_url,
+        bus_details_to_search_dict,
+        fetch_bus_details,
+        fetch_lsservicos,
+    )
 
-    with sync_playwright() as pw:
-        ctx = build_context(pw)
-        page = ctx.new_page()
-        telemetry = TelemetryWatcher(start_time=time.monotonic())
-        page.on("response", telemetry.on_response)
-        try:
-            open_search_page(page, telemetry, params)
-            return resolve_all_trips(page, params)
-        finally:
-            try:
-                ctx.close()
-            except Exception:  # FIX (bug 2)
-                pass
+    lsservicos = fetch_lsservicos(params.search_url)
+    if not lsservicos:
+        raise RuntimeError("no trips found in search page HTML")
+
+    collected: dict[str, dict] = {}
+    for ls_trip in lsservicos:
+        url = build_bus_details_url(ls_trip, params.date)
+        bus_data = fetch_bus_details(url)
+        if not bus_data:
+            continue
+        result = bus_details_to_search_dict(ls_trip, bus_data)
+        if result and result["service_id"] not in collected:
+            collected[result["service_id"]] = result
+        jitter(200, 500)
+
+    log.info(f"[search_fast] {len(collected)} trips resolved")
+    return list(collected.values())
