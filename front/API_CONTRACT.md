@@ -190,7 +190,7 @@ hand-copying when possible.
 ### `ReservationRecord`
 ```jsonc
 {
-  "id": "f1c2…",                 // string UUID
+  "id": "a1b2c3d4",              // 8-char hex ID (first segment of a UUID)
   "origin_id": "19058",          // string
   "destination_id": "21787",     // string
   "date": "2026-05-28",          // yyyy-mm-dd
@@ -249,7 +249,7 @@ fast (~2 s, HTML parse only); seat detail is fetched on demand per trip.
 ### `SchedulerStatusResponse` (from `GET /scheduler/status`)
 ```jsonc
 {
-  "running": true, "interval_minutes": 21,
+  "running": true, "interval_minutes": 20,
   "active_relock_count": 1,                                  // == active_relock_jobs.length
   "active_relock_jobs": [
     { "reservation_id": "f1c2…", "next_run": "…", "relock_count": 3,
@@ -352,6 +352,6 @@ user retry explicitly).
 
 - `GET /health` for a connectivity/uptime indicator (cheap, call freely).
 - Keep poll intervals modest (≥ ~15 s). The backend re-locks every
-  `interval_minutes` (21 by default), so sub-minute polling adds no signal.
+  `interval_minutes` (20 by default), so sub-minute polling adds no signal.
 - There is no auth on public endpoints and no rate limiting — be a good citizen
   and don't hammer the browser-driven endpoints.

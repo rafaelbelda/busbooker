@@ -33,13 +33,35 @@ def _iter_seats(seat_map: list):
 
 
 def parse_seat_map(seat_map: list) -> list[SeatInfo]:
-    """Flatten the seatMap into a serialisable list for the /seats endpoint."""
+    """Flatten the seatMap into a serialisable list for the /seats endpoint.
+
+    x = bus length (1..N, front→back), y = cross-section (0..4), z = floor
+    index (0 = ground floor, 1 = upper floor on double-deckers). Non-numeric
+    labels such as 'WC' and 'ES' are excluded, as are corridor markers (-99).
+    """
     seats: list[SeatInfo] = []
     for seat in _iter_seats(seat_map):
         raw = seat.get("numero", -99)
         if raw == -99 or str(raw) == "-99":
             continue
-        seats.append(SeatInfo(number=str(raw).strip(), available=bool(seat.get("disponivel", False))))
+        num_str = str(raw).strip()
+        try:
+            int(num_str)          # rejects WC, ES, and any other non-numeric label
+        except ValueError:
+            continue
+        try:
+            pos_x = float(seat.get("posX") or seat.get("x") or 0)
+            pos_y = float(seat.get("posY") or seat.get("y") or 0)
+            pos_z = float(seat.get("z") or 0)
+        except (TypeError, ValueError):
+            pos_x = pos_y = pos_z = 0.0
+        seats.append(SeatInfo(
+            number=num_str,
+            available=bool(seat.get("disponivel", False)),
+            posX=pos_x,
+            posY=pos_y,
+            posZ=pos_z,
+        ))
     return seats
 
 

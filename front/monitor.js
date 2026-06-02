@@ -188,7 +188,7 @@
 
     // seed the event log from the record
     const c = M.rec;
-    appendLog(`RESERVATION ${c.id.slice(0, 8)} ACQUIRED`, "");
+    appendLog(`RESERVATION ${c.id} ACQUIRED`, "");
     appendLog(`CREATED · seat ${c.seat} · route ${c.origin_id}→${c.destination_id}`, "");
     if (c.status === "locked") appendLog(`SEAT LOCKED · exit ${c.exit_code} · cycle armed`, "ok");
     if (c.relock_count > 0) appendLog(`${c.relock_count} re-lock cycle(s) on record`, "");
@@ -349,7 +349,7 @@
   async function doCancel(statusEl, btn) {
     if (!M || !M.rec) return;
     const r = M.rec;
-    if (!confirm("Cancel reservation " + r.id.slice(0, 8) + "? This stops its re-lock job and forgets the record.")) return;
+    if (!confirm("Cancel reservation " + r.id + "? This stops its re-lock job and forgets the record.")) return;
     btn.disabled = true; statusEl.innerHTML = "";
     appendLog("CANCEL REQUESTED", "warn");
     try {

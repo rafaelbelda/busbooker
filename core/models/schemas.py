@@ -48,14 +48,16 @@ class ReservationStatus(str, Enum):
 
 
 class ReservationRequest(BaseModel):
-    """POST /reservations body — every field is required.
+    """POST /reservations body.
 
-    There are no server-side route defaults: a reservation always describes a
-    route the user explicitly chose. Omitting any field is a 422.
+    ``id`` is optional: the client may supply a pre-generated 8-char hex ID so
+    it can navigate to the monitor immediately without waiting for the flow to
+    complete.  When omitted the server generates one.
     """
 
     model_config = ConfigDict(extra="forbid")
 
+    id: Optional[str] = Field(default=None, description="client-generated 8-char hex ID (optional)")
     origin_id: str = Field(examples=["19058"])
     destination_id: str = Field(examples=["21787"])
     date: str = Field(examples=["2026-05-28"], description="yyyy-mm-dd")
@@ -124,6 +126,9 @@ class ReservationRecord(BaseModel):
 class SeatInfo(BaseModel):
     number: str
     available: bool
+    posX: float = 0.0
+    posY: float = 0.0
+    posZ: float = 0.0   # floor index: 0 = ground, 1 = upper (double-decker)
 
 
 class SeatsResponse(BaseModel):

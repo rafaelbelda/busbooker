@@ -61,7 +61,7 @@ survive a restart. See **Persistence & restart recovery**.
    │   api/routes.py            scheduler/jobs.py                    │
    │   ├─ GET  /health          └─ AsyncIOScheduler                  │
    │   ├─ GET  /seats              per-reservation re-lock jobs only │
-   │   ├─ POST /reservations  ─┐      (relock_<id>, every 21 min     │
+   │   ├─ POST /reservations  ─┐      (relock_<id>, every 20 min     │
    │   ├─ GET  /reservations/{id}      until departure)              │
    │   ├─ DEL  /reservations/{id}     │                              │
    │   └─ GET  /scheduler/status      │                              │
@@ -128,7 +128,7 @@ root:
 ADMIN_PASSWORD=change-me      # required, no default
 HEADLESS=false
 WAIT_AFTER_LOCK=60
-SCHEDULER_INTERVAL=21         # minutes between a reservation's re-lock attempts
+SCHEDULER_INTERVAL=20         # minutes between a reservation's re-lock attempts
 ```
 
 ---
@@ -285,7 +285,7 @@ curl http://127.0.0.1:8771/scheduler/status
 ```
 ```json
 {
-  "running": true, "interval_minutes": 21,
+  "running": true, "interval_minutes": 20,
   "active_relock_count": 1,
   "active_relock_jobs": [
     {
@@ -317,7 +317,7 @@ departure and seat are always supplied per request.
 | `ADMIN_PASSWORD`     | **(required, no default)**  | HTTP Basic password for `/admin/*` (username `admin`). Startup fails if unset. |
 | `MAX_RETRIES`        | `1`                         | Attempts for retry-wrapped browser steps.                |
 | `WAIT_AFTER_LOCK`    | `60`                        | Seconds the lock is held before confirmation.            |
-| `SCHEDULER_INTERVAL` | `21`                        | Minutes between a reservation's re-lock attempts.        |
+| `SCHEDULER_INTERVAL` | `20`                        | Minutes between a reservation's re-lock attempts.        |
 | `RESERVATION_DB`     | `core/data/reservations.db` | SQLite file for durable reservations. `:memory:` disables persistence. |
 | `RATE_LIMIT_PER_MIN` | `0` (disabled)              | Per-client-IP request cap/min on the browser endpoints (`/seats`, `/search`, `/reservations`). `0` = off. |
 | `MAX_FLOW_QUEUE`     | `8`                         | Max concurrent (queued + running) browser requests before new ones get a fast `503`. `0` = off. |

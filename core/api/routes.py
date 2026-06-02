@@ -194,7 +194,7 @@ async def create_reservation(
     )
     now = datetime.now(timezone.utc)
     record = ReservationRecord(
-        id=str(uuid4()),
+        id=req.id or str(uuid4()).split("-")[0],  # client-supplied or server-generated
         origin_id=params.origin_id,
         destination_id=params.destination_id,
         date=params.date,

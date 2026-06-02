@@ -53,6 +53,7 @@
     reserving: false, browserBusy: false,
     monitorId: localStorage.getItem("bb_resv") || "",
     adminAuth: null,
+    searchMode: "city",
   };
 
   /* ---------- global browser-flow serialization ---------- */
@@ -125,14 +126,27 @@
   const nearestIndex = (cs, v) => { let bi = 0, bd = Infinity; cs.forEach((c, i) => { const d = Math.abs(c - v); if (d < bd) { bd = d; bi = i; } }); return bi; };
   // Normalises both TripSeat {numero, disponivel, posX, posY}
   // and SeatInfo {number, available} shapes into a common form.
+  // posX = JSON "x" = bus length (1..N, front→back)   → internal y (rows in vertical, columns in transpose)
+  // posY = JSON "y" = cross-section (0..4, 2=corridor) → internal x (columns / aisle detection)
   const normSeat = (s) => ({
     num: s.numero != null ? s.numero : s.number,
     avail: s.disponivel != null ? s.disponivel : s.available,
-    x: +(s.posX || 0), y: +(s.posY || 0),
+    x: +(s.posY || 0),   // cross-section → aisle axis
+    y: +(s.posX || 0),   // bus length   → depth axis
   });
 
-  /* Split seats into decks/floors by detecting a large vertical gap in posY. */
+  /* Split seats into sections/decks. Two strategies:
+     1. z field > 0 exists → true multi-deck bus, group by z.
+     2. Fallback: large gap in bus-length axis (normSeat.y = posX) → two sections
+        separated by empty rows (e.g. executive buses).  Higher posX = FLOOR 1
+        to match mobifacil's Primeiro/Segundo Piso ordering. */
   function splitFloors(seats) {
+    const zVals = [...new Set(seats.map((s) => +(s.posZ || 0)))].sort((a, b) => a - b);
+    if (zVals.length > 1) {
+      const groups = {};
+      seats.forEach((s) => { const z = +(s.posZ || 0); (groups[z] = groups[z] || []).push(s); });
+      return zVals.map((z, idx) => ({ label: "FLOOR " + (idx + 1), seats: groups[z] }));
+    }
     const norm = seats.map(normSeat);
     const ys = [...new Set(norm.map((s) => Math.round(s.y * 100) / 100))].sort((a, b) => a - b);
     if (ys.length < 3) return [{ label: null, seats }];
@@ -143,8 +157,9 @@
     if (!cuts.length) return [{ label: null, seats }];
     const floorOf = (y) => { let f = 0; for (const c of cuts) if (y > c) f++; return f; };
     const groups = {};
-    seats.forEach((s) => { const f = floorOf(+(s.posY || 0)); (groups[f] = groups[f] || []).push(s); });
-    return Object.keys(groups).sort((a, b) => a - b).map((f, idx) => ({ label: "Piso " + (idx + 1), seats: groups[f] }));
+    norm.forEach((ns, i) => { const f = floorOf(ns.y); (groups[f] = groups[f] || []).push(seats[i]); });
+    // Reverse: higher posX section → FLOOR 1 (matches mobifacil Primeiro Piso)
+    return Object.keys(groups).sort((a, b) => +b - +a).map((f, idx) => ({ label: "FLOOR " + (idx + 1), seats: groups[f] }));
   }
 
   function seatCell(s, o) {
@@ -185,13 +200,30 @@
       map.style.gridTemplateColumns = `repeat(${cols}, ${cell}px)`;
       norm.forEach((s) => map.appendChild(seatCell(s, o)));
     } else if (o.transpose) {
-      // Rotated 90° left: bus length (posY) runs left→right as columns,
-      // seat columns (posX) run top→bottom as rows. Saves vertical space in trip cards.
+      // Bus length (posX) → columns left→right; cross-section (posY) → rows top→bottom.
+      // Split cross-section positions into groups at aisle gaps (xMin * 1.8 threshold).
+      // Sort groups so the SMALLER group (single seats) is always on top.
+      const xGaps = xs.slice(1).map((x, i) => x - xs[i]);
+      const xMin = xGaps.length ? Math.min(...xGaps) : 0;
+      const xGroups = []; let curGrp = [xs[0]];
+      xs.slice(1).forEach((x, i) => {
+        if (xMin > 0 && xGaps[i] > xMin * 1.8) { xGroups.push(curGrp); curGrp = [x]; }
+        else curGrp.push(x);
+      });
+      xGroups.push(curGrp);
+      // Smaller group first (single-seat side on top); equal-size groups keep natural order
+      xGroups.sort((a, b) => a.length - b.length);
+      const rowTpl = []; const xRowMap = new Map();
+      xGroups.forEach((grp, gi) => {
+        if (gi > 0) rowTpl.push((mini ? 4 : 14) + "px");
+        grp.forEach((x) => { rowTpl.push(cell + "px"); xRowMap.set(x, rowTpl.length); });
+      });
       map.style.gridTemplateColumns = ys.map(() => cell + "px").join(" ");
+      map.style.gridTemplateRows = rowTpl.join(" ");
       norm.forEach((s) => {
         const c = seatCell(s, o);
         c.style.gridColumn = nearestIndex(ys, s.y) + 1;
-        c.style.gridRow = nearestIndex(xs, s.x) + 1;
+        c.style.gridRow = xRowMap.get(xs[nearestIndex(xs, s.x)]);
         map.appendChild(c);
       });
     } else {
@@ -233,7 +265,7 @@
     };
     floors.forEach((fl, i) => tabs.appendChild(el("button", {
       class: "floortab", type: "button", "aria-pressed": i === active ? "true" : "false",
-      text: (fl.label || "Piso " + (i + 1)) + " · " + fl.seats.filter((s) => normSeat(s).avail).length,
+      text: (fl.label || "FLOOR " + (i + 1)) + " · " + fl.seats.filter((s) => normSeat(s).avail).length,
       onclick: () => show(i),
     })));
     wrap.append(tabs, stage);
@@ -261,20 +293,97 @@
   function renderSearch() {
     const root = $("#view-search");
     root.innerHTML = "";
+
+    const CITIES = [
+      { name: "São Paulo (todos)", id: "-3" },
+      { name: "Campinas SP",       id: "19301" },
+      { name: "Ribeirão Preto SP", id: "19068" },
+      { name: "São Carlos SP",     id: "19058" },
+      { name: "Araraquara SP",     id: "19052" },
+      { name: "Florianópolis SC",  id: "-18" },
+    ];
+
+    function dateOffset(days) {
+      const d = new Date();
+      d.setDate(d.getDate() + days);
+      return `${d.getFullYear()}-${pad2(d.getMonth() + 1)}-${pad2(d.getDate())}`;
+    }
+    const today = dateOffset(0);
+    const maxDay = dateOffset(5);
+
+    const makeOpts = (selectedId) =>
+      CITIES.map((c) => {
+        const o = el("option", { value: c.id, text: c.name });
+        if (c.id === selectedId) o.selected = true;
+        return o;
+      });
+
+    const originSel = el("select", { id: "originSel" }, makeOpts("19052")); // default: Araraquara
+    const destSel   = el("select", { id: "destSel"   }, makeOpts("-3"));    // default: São Paulo
+
+    const dateInput = el("input", {
+      type: "date", id: "searchDate",
+      value: today, min: today, max: maxDay,
+    });
+
+    const swapBtn = el("button", {
+      class: "swapbtn", type: "button", "aria-label": "swap origin and destination", text: "⇄",
+    });
+    swapBtn.addEventListener("click", () => {
+      const tmp = originSel.value;
+      originSel.value = destSel.value;
+      destSel.value = tmp;
+    });
+
     const urlField = el("textarea", {
       id: "searchUrl", rows: "3", autocapitalize: "off", autocomplete: "off", spellcheck: "false",
       placeholder: "https://mobifacil.com.br/passagem-de-onibus/…?origin=…&destination=…&date=dd-mm-yyyy…",
     });
-    // Not a browser-action: search no longer holds the browser lock.
+
+    const tabCity = el("button", { class: "modetab", type: "button", "aria-pressed": "true",  text: "City Select" });
+    const tabUrl  = el("button", { class: "modetab", type: "button", "aria-pressed": "false", text: "Direct URL" });
+
+    const cityForm = el("div", { id: "cityForm" }, [
+      el("div", { class: "field" }, [
+        el("div", { class: "cityrow" }, [
+          el("div", { class: "citycol" }, [el("span", { class: "citylbl", text: "Origin" }), originSel]),
+          swapBtn,
+          el("div", { class: "citycol" }, [el("span", { class: "citylbl", text: "Destination" }), destSel]),
+        ]),
+      ]),
+      el("div", { class: "field" }, [
+        el("label", { for: "searchDate", text: "Date" }),
+        dateInput,
+        el("span", { class: "hint", text: "Up to 5 days ahead. For other cities use Direct URL." }),
+      ]),
+    ]);
+
+    const urlForm = el("div", { id: "urlForm", class: "hidden" }, [
+      el("div", { class: "field" }, [
+        el("label", { for: "searchUrl", text: "Mobifacil passage URL" }),
+        urlField,
+        el("span", { class: "hint", text: "Paste the full mobifacil passagem-de-onibus link exactly as copied." }),
+      ]),
+    ]);
+
+    const switchMode = (mode) => {
+      state.searchMode = mode;
+      tabCity.setAttribute("aria-pressed", mode === "city" ? "true" : "false");
+      tabUrl.setAttribute("aria-pressed",  mode === "url"  ? "true" : "false");
+      cityForm.classList.toggle("hidden", mode !== "city");
+      urlForm.classList.toggle("hidden",  mode !== "url");
+    };
+    tabCity.addEventListener("click", () => switchMode("city"));
+    tabUrl.addEventListener("click",  () => switchMode("url"));
+
     const searchBtn = el("button", { class: "btn", id: "searchBtn", type: "button", text: "▶ Search" });
+
     root.append(
       el("div", { class: "section" }, [
         el("div", { class: "legend" }, [el("span", { class: "idx", text: "01" }), "Traject input"]),
-        el("div", { class: "field" }, [
-          el("label", { for: "searchUrl", text: "Mobifacil passage URL" }),
-          urlField,
-          el("span", { class: "hint", text: "Paste the full mobifacil passagem-de-onibus link exactly as copied." }),
-        ]),
+        el("div", { class: "modetabs" }, [tabCity, tabUrl]),
+        cityForm,
+        urlForm,
         searchBtn,
         el("div", { id: "searchStatus", class: "spaced", style: "margin-top:12px" }),
       ]),
@@ -284,17 +393,30 @@
       ]),
       el("div", { class: "section hidden", id: "seatSec" })
     );
+
+    if (state.searchMode === "url") switchMode("url");
     searchBtn.addEventListener("click", doSearch);
-    // restore a previous result if returning to the tab
     if (state.search) { renderTrips(); if (state.trip) renderSeatSection(); }
   }
 
   async function doSearch() {
-    const url = $("#searchUrl").value.trim();
     const status = $("#searchStatus");
     status.innerHTML = "";
-    if (!url) { status.appendChild(banner("warn", "NO URL", "paste a mobifacil passage link first")); return; }
-    // Search is now a plain HTTP call (~2s) — no browser lock needed.
+
+    let url;
+    if (state.searchMode !== "url") {
+      const origin = $("#originSel").value;
+      const dest   = $("#destSel").value;
+      const date   = $("#searchDate").value; // yyyy-mm-dd
+      if (!date) { status.appendChild(banner("warn", "NO DATE", "select a travel date")); return; }
+      if (origin === dest) { status.appendChild(banner("warn", "INVALID ROUTE", "origin and destination must differ")); return; }
+      const [yr, mo, dy] = date.split("-");
+      url = `https://mobifacil.com.br/passagem-de-onibus/?origin=${origin}&destination=${dest}&date=${dy}-${mo}-${yr}&isStudent=false&isPCD=false&searchValidDay=true`;
+    } else {
+      url = $("#searchUrl").value.trim();
+      if (!url) { status.appendChild(banner("warn", "NO URL", "paste a mobifacil passage link first")); return; }
+    }
+
     const btn = $("#searchBtn");
     btn.disabled = true;
     status.appendChild(banner("proc", "SEARCHING TRIPS…", "fetching mobifacil route HTML", true));
@@ -397,6 +519,7 @@
     seatArea.innerHTML = "";
     seatArea.appendChild(buildSeatMap(state.seatMap || [], {
       selected: state.seat, activeFloor: state.activeFloor,
+      transpose: true,
       onFloor: (i) => { state.activeFloor = i; },
       onPick: (num) => { state.seat = num; renderReserveControl(reserveSec); },
     }));
@@ -419,7 +542,7 @@
         ]),
       ])
     );
-    const reserveBtn = el("button", { class: "btn browser-action", id: "reserveBtn", type: "button" }, "■ Reserve seat");
+    const reserveBtn = el("button", { class: "btn browser-action", id: "reserveBtn", type: "button" }, "Reserve seat");
     reserveBtn.disabled = !state.seat || state.browserBusy;
     reserveBtn.dataset.forceDisabled = state.seat ? "0" : "1";
     reserveSec.append(
@@ -430,29 +553,23 @@
     reserveBtn.addEventListener("click", doReserve);
   }
 
-  async function doReserve() {
+  function doReserve() {
     if (!state.trip || !state.seat || state.reserving) return;
     const s = state.search;
-    const body = { origin_id: s.origin_id, destination_id: s.destination_id, date: s.date, departure: state.trip.departure, seat: state.seat };
-    const status = $("#reserveStatus");
-    status.innerHTML = ""; state.reserving = true; setBrowserBusy(true);
-    status.appendChild(workingBanner("LOCKING SEAT… UP TO ~90 SECONDS"));
-    try {
-      const { status: code, record } = await BB.createReservation(body);
-      status.innerHTML = "";
-      if (code === 201 && record.status === "locked") {
-        saveMonitorId(record.id);
-        status.appendChild(banner("ok", "SEAT LOCKED ✓", `id ${record.id.slice(0, 8)} · re-lock cycle armed`));
-        status.appendChild(el("button", { class: "btn verb", type: "button", text: "◎ Track this reservation",
-          onclick: () => { state.monitorId = record.id; switchView("monitor"); } }));
-      } else if (code === 409) {
-        status.appendChild(banner("bad", "SEAT UNAVAILABLE", "that seat was just taken — pick another from the map"));
-      } else {
-        status.appendChild(banner("bad", "FLOW ERROR · 500", (record && record.error_msg) || "unrecoverable provider error — you may retry"));
-      }
-    } catch (e) {
-      status.innerHTML = ""; status.appendChild(errBanner(e));
-    } finally { state.reserving = false; setBrowserBusy(false); }
+    // Generate 8-char hex ID client-side (same format the server uses).
+    // This lets us navigate to the monitor instantly without waiting for the
+    // 90-second browser flow — the monitor polls for live status via GET /reservations/{id}.
+    const rid = Array.from(crypto.getRandomValues(new Uint8Array(4)))
+      .map((b) => b.toString(16).padStart(2, "0")).join("");
+    saveMonitorId(rid);
+    switchView("monitor");
+    // Fire the reservation in the background; PROC lamp stays amber until done.
+    state.reserving = true; setBrowserBusy(true);
+    BB.createReservation({
+      id: rid,
+      origin_id: s.origin_id, destination_id: s.destination_id,
+      date: s.date, departure: state.trip.departure, seat: state.seat,
+    }).catch(() => {}).finally(() => { state.reserving = false; setBrowserBusy(false); });
   }
 
   function saveMonitorId(id) { state.monitorId = id; localStorage.setItem("bb_resv", id); }
@@ -566,13 +683,13 @@
       const cancelBtn = el("button", { class: "btn danger sm", type: "button", text: "Force-cancel", style: "min-height:36px;padding:6px 10px;font-size:11px" });
       cancelBtn.disabled = r.status === "cancelled" || r.status === "expired";
       cancelBtn.addEventListener("click", async () => {
-        if (!confirm("Force-cancel " + r.id.slice(0, 8) + "? Record is kept and marked cancelled.")) return;
+        if (!confirm("Force-cancel " + r.id + "? Record is kept and marked cancelled.")) return;
         cancelBtn.disabled = true; cancelBtn.textContent = "…";
         try { await BB.adminDelete(r.id, auth); reload(); }
         catch (e) { cancelBtn.disabled = false; cancelBtn.textContent = "Force-cancel"; alert("Failed: " + e.message); }
       });
       tb.appendChild(el("tr", {}, [
-        el("td", { class: "mono7", text: r.id.slice(0, 8) }),
+        el("td", { class: "mono7", text: r.id }),
         el("td", { text: r.origin_id + "→" + r.destination_id }),
         el("td", { class: "mono7", text: r.seat }),
         el("td", { text: r.date + " " + r.departure }),

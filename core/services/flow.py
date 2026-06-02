@@ -223,6 +223,11 @@ def fetch_seat_map(params: RouteParams) -> list[SeatInfo]:
     trips = bus_data.get("details", {}).get("trip", [])
     if not trips:
         raise RuntimeError("BusDetails returned no trip data")
+
+    # trips[0] is the (only) bus for direct routes; trips[1] is a SECOND BUS
+    # in a connection trip — not a second floor. Double-decker buses have all
+    # seats in trips[0].seatMap, with the z field (0=ground, 1=upper) used as
+    # the floor discriminator. splitFloors() on the frontend groups by posZ.
     return parse_seat_map(trips[0].get("seatMap", []))
 
 

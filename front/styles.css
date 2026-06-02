@@ -550,6 +550,43 @@ table.recs .mono7{ font-family:var(--seg7); color:var(--amber-hi); }
 .teletype .ln.bad{ color:var(--lamp-red); } .teletype .ln.sell{ color:#ffcaa0; }
 .teletype .ln::before{ content:"› "; color:var(--amber-faint); }
 
+/* ============================================================
+   SEARCH MODE TOGGLE + CITY SELECTOR
+   ============================================================ */
+.modetabs{ display:flex; gap:6px; margin-bottom:12px; }
+.modetab{
+  flex:1; min-height:40px; font-family:var(--mono); font-size:11px; letter-spacing:.1em;
+  text-transform:uppercase; cursor:pointer;
+  color:var(--amber-dim); background:linear-gradient(180deg,#221a12,#16110b);
+  border:1px solid #000; border-radius:5px;
+  box-shadow:inset 0 1px 0 rgba(255,210,150,.08);
+  touch-action:manipulation; user-select:none; -webkit-user-select:none;
+  transition:color .15s, box-shadow .15s, background .15s;
+}
+.modetab[aria-pressed="true"]{
+  color:var(--amber); text-shadow:var(--amber-glow);
+  background:linear-gradient(180deg,#33271a,#211810);
+  box-shadow:inset 0 0 8px rgba(255,150,50,.22), inset 0 0 0 1px rgba(255,160,60,.25);
+}
+.modetab:active{ box-shadow:inset 0 2px 6px rgba(0,0,0,.7); }
+
+.cityrow{ display:flex; gap:8px; align-items:flex-end; }
+.citycol{ display:flex; flex-direction:column; gap:4px; flex:1; min-width:0; }
+.citylbl{ font-size:11px; letter-spacing:.16em; text-transform:uppercase; color:var(--amber-dim); }
+
+.swapbtn{
+  flex:none; width:42px; min-height:var(--tap); padding:0;
+  font-family:var(--mono); font-size:18px;
+  color:var(--amber-dim); background:linear-gradient(180deg,#221a12,#16110b);
+  border:1px solid #000; border-radius:5px; cursor:pointer;
+  touch-action:manipulation; user-select:none; -webkit-user-select:none;
+  display:flex; align-items:center; justify-content:center;
+  box-shadow:inset 0 1px 0 rgba(255,210,150,.08);
+  transition:color .15s, box-shadow .15s;
+}
+.swapbtn:hover{ color:var(--amber); }
+.swapbtn:active{ box-shadow:inset 0 2px 6px rgba(0,0,0,.7); }
+
 /* desktop niceties */
 @media (min-width:600px){
   body{ padding-top:28px; padding-bottom:36px; }

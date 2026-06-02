@@ -47,7 +47,7 @@ class Settings(BaseSettings):
     wait_after_lock: int = 60  # seconds the lock is held before confirmation
 
     # ---- scheduler ----
-    scheduler_interval: int = 21  # minutes
+    scheduler_interval: int = 20  # minutes
 
     # ---- persistence ----
     # SQLite file holding reservations so they (and their re-lock jobs) survive a
