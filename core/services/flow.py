@@ -201,13 +201,18 @@ def fetch_seat_map(params: RouteParams) -> list[SeatInfo]:
         build_bus_details_url,
         fetch_bus_details,
         fetch_lsservicos,
+        filter_trips_by_date,
     )
 
-    # Use a single client so cookies from the HTML fetch are sent with BusDetails.
+    # Use a single client so cookies from the HTML fetch carry over to BusDetails.
     with httpx.Client(timeout=25, follow_redirects=True) as client:
         lsservicos = fetch_lsservicos(params.search_url, client=client)
         if not lsservicos:
             raise RuntimeError("no trips found in search page HTML")
+
+        lsservicos = filter_trips_by_date(lsservicos, params.date)
+        if not lsservicos:
+            raise RuntimeError("no more trips for this date")
 
         def _dep_hour(trip: dict) -> str:
             saida = trip.get("saida", "")       # "02/06/2026 05:50"
@@ -241,11 +246,16 @@ def search_trips(params: RouteParams) -> list[dict]:
     lsServicos already contains price, times, company, class, available seat
     count and duration. Individual seat maps belong to /seats, not /search.
     """
-    from .htmlsearch import fetch_lsservicos, lsservicos_to_search_dict
+    from .htmlsearch import fetch_lsservicos, filter_trips_by_date, lsservicos_to_search_dict
 
     lsservicos = fetch_lsservicos(params.search_url)
     if not lsservicos:
-        raise RuntimeError("no trips found in search page HTML")
+        return []
+
+    lsservicos = filter_trips_by_date(lsservicos, params.date)
+    if not lsservicos:
+        log.info("[search] mobifacil returned next-day data — no trips for requested date")
+        return []
 
     results = [lsservicos_to_search_dict(t) for t in lsservicos]
     log.info(f"[search] {len(results)} trips from HTML")

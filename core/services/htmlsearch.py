@@ -68,6 +68,18 @@ _JSON_HEADERS = {
 # HTML fetch + lsServicos parse
 # ─────────────────────────────────────────────────────────────────
 
+def filter_trips_by_date(trips: list[dict], date_yyyymmdd: str) -> list[dict]:
+    """Return only trips whose saida date matches date_yyyymmdd (YYYY-MM-DD).
+
+    Mobifacil rolls over to the next day's results when all trips for the
+    requested date have already departed. Filtering by date catches this so
+    we never surface next-day data to the caller.
+    """
+    y, m, d = date_yyyymmdd.split("-")
+    expected = f"{d}/{m}/{y}"   # mobifacil saida format: "DD/MM/YYYY HH:MM"
+    return [t for t in trips if t.get("saida", "").startswith(expected)]
+
+
 def fetch_lsservicos(
     search_url: str, client: Optional[httpx.Client] = None
 ) -> list[dict]:
@@ -277,41 +289,21 @@ def build_bus_details_url(ls_trip: dict, date: str) -> str:
 def fetch_bus_details(
     url: str, client: Optional[httpx.Client] = None
 ) -> Optional[dict]:
-    """httpx GET a BusDetails URL, return the parsed JSON body or None on failure.
-
-    The server may respond with success=false and action='BusDetails-BusDetails'
-    plus a new queryString; that is a soft redirect — we follow it once.
-    """
-    def _get(target: str) -> Optional[dict]:
-        try:
-            if client is not None:
-                resp = client.get(target, headers=_JSON_HEADERS)
-            else:
-                with httpx.Client(timeout=15, follow_redirects=True) as c:
-                    resp = c.get(target, headers=_JSON_HEADERS)
-            if not resp.is_success:
-                log.warning(f"[htmlsearch] BusDetails HTTP {resp.status_code}")
-                return None
-            return resp.json()
-        except Exception as exc:
-            log.warning(f"[htmlsearch] BusDetails error: {exc!r}")
-            return None
-
-    data = _get(url)
-    if data is None:
-        return None
-
-    if not data.get("success"):
-        qs = data.get("queryString", "")
-        if data.get("action") == "BusDetails-BusDetails" and qs:
-            retry_url = settings.base_url + BUS_DETAILS_PATH + "?" + qs
-            log.info(f"[htmlsearch] BusDetails redirect → retrying with server queryString")
-            data = _get(retry_url)
-            if data is None or not data.get("success"):
-                log.warning(f"[htmlsearch] BusDetails retry success=false: {str(data)[:120]}")
-                return None
+    """httpx GET a BusDetails URL, return the parsed JSON body or None on failure."""
+    try:
+        if client is not None:
+            resp = client.get(url, headers=_JSON_HEADERS)
         else:
+            with httpx.Client(timeout=15, follow_redirects=True) as c:
+                resp = c.get(url, headers=_JSON_HEADERS)
+        if not resp.is_success:
+            log.warning(f"[htmlsearch] BusDetails HTTP {resp.status_code}")
+            return None
+        data = resp.json()
+        if not data.get("success"):
             log.warning(f"[htmlsearch] BusDetails success=false: {str(data)[:120]}")
             return None
-
-    return data
+        return data
+    except Exception as exc:
+        log.warning(f"[htmlsearch] BusDetails error: {exc!r}")
+        return None

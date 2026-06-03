@@ -99,6 +99,12 @@ async def get_seats(
     try:
         # No FLOW_LOCK: fetch_seat_map uses httpx, not the browser session.
         seats = await loop.run_in_executor(None, fetch_seat_map, params)
+    except RuntimeError as exc:
+        if "no more trips for this date" in str(exc):
+            log.info(f"[/seats] {exc}")
+            raise HTTPException(status_code=404, detail="no more trips for this date") from exc
+        log.exception(f"[/seats] failed: {exc!r}")
+        raise HTTPException(status_code=500, detail="seat map fetch failed") from exc
     except Exception as exc:
         log.exception(f"[/seats] failed: {exc!r}")
         raise HTTPException(status_code=500, detail="seat map fetch failed") from exc

@@ -436,7 +436,7 @@
     const sec = $("#resultsSec"); const list = $("#tripList");
     sec.classList.remove("hidden"); list.innerHTML = "";
     const trips = (state.search && state.search.trips) || [];
-    if (!trips.length) { list.appendChild(el("div", { class: "empty", text: "NO TRIPS RETURNED FOR THIS ROUTE" })); return; }
+    if (!trips.length) { list.appendChild(el("div", { class: "empty", text: "NO TRIPS FOR THIS DATE · ALL DEPARTURES MAY HAVE PASSED" })); return; }
     trips.forEach((t) => {
       // Build meta line: service class, duration, floor count
       const metaParts = [t.service_class];
@@ -517,7 +517,10 @@
       renderSeatPicker(seatArea, reserveSec);
     } catch (e) {
       seatArea.innerHTML = "";
-      seatArea.appendChild(errBanner(e));
+      if (e instanceof BB.ApiError && e.status === 404)
+        seatArea.appendChild(banner("warn", "NO MORE TRIPS FOR THIS DATE", "all departures have passed — search a future date"));
+      else
+        seatArea.appendChild(errBanner(e));
     } finally {
       setBrowserBusy(false);
     }
