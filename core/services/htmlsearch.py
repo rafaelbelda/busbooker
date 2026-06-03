@@ -154,6 +154,7 @@ def lsservicos_to_search_dict(ls_trip: dict) -> dict:
     """
     saida = ls_trip.get("saida", "")      # "02/06/2026 05:00"
     chegada = ls_trip.get("chegada", "")  # "02/06/2026 06:40"
+    dep_date = saida.split(" ", 1)[0] if " " in saida else ""
     dep_hour = saida.rsplit(" ", 1)[-1] if " " in saida else saida
     arr_hour = chegada.rsplit(" ", 1)[-1] if " " in chegada else chegada
 
@@ -165,6 +166,7 @@ def lsservicos_to_search_dict(ls_trip: dict) -> dict:
         "service_id": service_id,
         "departure": dep_hour,
         "arrival": arr_hour,
+        "departure_date": dep_date,
         "company": ls_trip.get("empresa", ""),
         "price": str(ls_trip.get("preco", "") or ""),
         "service_class": ls_trip.get("classe", ""),
@@ -191,6 +193,7 @@ def bus_details_to_search_dict(ls_trip: dict, bus_data: dict) -> Optional[dict]:
 
     saida = ls_trip.get("saida", "")
     chegada = ls_trip.get("chegada", "")
+    dep_date = saida.split(" ", 1)[0] if " " in saida else ""
     dep_hour = saida.rsplit(" ", 1)[-1] if " " in saida else saida
     arr_hour = chegada.rsplit(" ", 1)[-1] if " " in chegada else chegada
 
@@ -198,6 +201,7 @@ def bus_details_to_search_dict(ls_trip: dict, bus_data: dict) -> Optional[dict]:
         "service_id": sid,
         "departure": str(t.get("departureHour", dep_hour)).strip(),
         "arrival": str(t.get("arrivalHour", arr_hour)).strip(),
+        "departure_date": dep_date,
         "company": str(t.get("company", "") or ls_trip.get("empresa", "")),
         "price": str(ls_trip.get("preco", "") or ""),
         "service_class": str(t.get("serviceClass", "") or ls_trip.get("classe", "")),
@@ -273,21 +277,41 @@ def build_bus_details_url(ls_trip: dict, date: str) -> str:
 def fetch_bus_details(
     url: str, client: Optional[httpx.Client] = None
 ) -> Optional[dict]:
-    """httpx GET a BusDetails URL, return the parsed JSON body or None on failure."""
-    try:
-        if client is not None:
-            resp = client.get(url, headers=_JSON_HEADERS)
-        else:
-            with httpx.Client(timeout=15, follow_redirects=True) as c:
-                resp = c.get(url, headers=_JSON_HEADERS)
-        if not resp.is_success:
-            log.warning(f"[htmlsearch] BusDetails HTTP {resp.status_code}")
+    """httpx GET a BusDetails URL, return the parsed JSON body or None on failure.
+
+    The server may respond with success=false and action='BusDetails-BusDetails'
+    plus a new queryString; that is a soft redirect — we follow it once.
+    """
+    def _get(target: str) -> Optional[dict]:
+        try:
+            if client is not None:
+                resp = client.get(target, headers=_JSON_HEADERS)
+            else:
+                with httpx.Client(timeout=15, follow_redirects=True) as c:
+                    resp = c.get(target, headers=_JSON_HEADERS)
+            if not resp.is_success:
+                log.warning(f"[htmlsearch] BusDetails HTTP {resp.status_code}")
+                return None
+            return resp.json()
+        except Exception as exc:
+            log.warning(f"[htmlsearch] BusDetails error: {exc!r}")
             return None
-        data = resp.json()
-        if not data.get("success"):
+
+    data = _get(url)
+    if data is None:
+        return None
+
+    if not data.get("success"):
+        qs = data.get("queryString", "")
+        if data.get("action") == "BusDetails-BusDetails" and qs:
+            retry_url = settings.base_url + BUS_DETAILS_PATH + "?" + qs
+            log.info(f"[htmlsearch] BusDetails redirect → retrying with server queryString")
+            data = _get(retry_url)
+            if data is None or not data.get("success"):
+                log.warning(f"[htmlsearch] BusDetails retry success=false: {str(data)[:120]}")
+                return None
+        else:
             log.warning(f"[htmlsearch] BusDetails success=false: {str(data)[:120]}")
             return None
-        return data
-    except Exception as exc:
-        log.warning(f"[htmlsearch] BusDetails error: {exc!r}")
-        return None
+
+    return data

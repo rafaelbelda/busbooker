@@ -476,10 +476,13 @@
 
     sec.classList.remove("hidden"); sec.innerHTML = "";
     sec.appendChild(el("div", { class: "legend" }, [el("span", { class: "idx", text: "03" }), "Seat select"]));
-    const rawDate = state.search?.date ?? "";
+    // departure_date is "DD/MM/YYYY" as returned by mobifacil — may differ from
+    // the searched date if mobifacil rolls over to the next day's results.
+    const rawDate = t.departure_date ?? "";
     const fmtDate = rawDate
-      ? new Date(rawDate + "T12:00:00").toLocaleDateString("en-GB", { day: "2-digit", month: "short", year: "numeric" }).toUpperCase()
-      : rawDate;
+      ? new Date(rawDate.split("/").reverse().join("-") + "T12:00:00")
+          .toLocaleDateString("en-GB", { day: "2-digit", month: "short", year: "numeric" }).toUpperCase()
+      : "";
     sec.appendChild(el("div", { class: "readout", style: "margin-bottom:12px" }, [
       kv("Service",  el("span", { class: "v wrap", text: t.company + " · " + t.service_class })),
       kv("Date",     el("span", { class: "v", text: fmtDate })),

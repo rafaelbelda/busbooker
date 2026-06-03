@@ -202,6 +202,7 @@ class TripResult(BaseModel):
     service_id: str
     departure: str
     arrival: str
+    departure_date: str = ""
     company: str
     price: str
     service_class: str
