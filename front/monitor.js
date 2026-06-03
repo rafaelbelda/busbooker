@@ -90,7 +90,13 @@
     try {
       const rec = await BB.getReservation(M.id);
       M.rec = rec;
-      M.depMs = rec.departure_datetime ? new Date(rec.departure_datetime).getTime() : null;
+      // Use the server-confirmed datetime when available; otherwise derive it from
+      // date + departure (São Paulo time, UTC-3) so the countdown runs during pending.
+      M.depMs = rec.departure_datetime
+        ? new Date(rec.departure_datetime).getTime()
+        : (rec.date && rec.departure
+            ? new Date(rec.date + "T" + rec.departure + ":00-03:00").getTime()
+            : null);
     } catch (e) {
       stop();
       const body = $("#monitorBody"); if (!body) return;
