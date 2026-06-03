@@ -476,8 +476,13 @@
 
     sec.classList.remove("hidden"); sec.innerHTML = "";
     sec.appendChild(el("div", { class: "legend" }, [el("span", { class: "idx", text: "03" }), "Seat select"]));
+    const rawDate = state.search?.date ?? "";
+    const fmtDate = rawDate
+      ? new Date(rawDate + "T12:00:00").toLocaleDateString("en-GB", { day: "2-digit", month: "short", year: "numeric" }).toUpperCase()
+      : rawDate;
     sec.appendChild(el("div", { class: "readout", style: "margin-bottom:12px" }, [
       kv("Service",  el("span", { class: "v wrap", text: t.company + " · " + t.service_class })),
+      kv("Date",     el("span", { class: "v", text: fmtDate })),
       kv("Depart",   el("span", { class: "v seg7", text: t.departure })),
       kv("Arrive",   el("span", { class: "v seg7", text: t.arrival })),
       t.duration ? kv("Duration", el("span", { class: "v", text: t.duration })) : null,

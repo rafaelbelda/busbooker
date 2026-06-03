@@ -196,27 +196,31 @@ def fetch_seat_map(params: RouteParams) -> list[SeatInfo]:
     Playwright-free seat map fetch: HTML parse + direct BusDetails call.
     No browser navigation needed — the search page is server-rendered.
     """
+    import httpx
     from .htmlsearch import (
         build_bus_details_url,
         fetch_bus_details,
         fetch_lsservicos,
     )
 
-    lsservicos = fetch_lsservicos(params.search_url)
-    if not lsservicos:
-        raise RuntimeError("no trips found in search page HTML")
+    # Use a single client so cookies from the HTML fetch are sent with BusDetails.
+    with httpx.Client(timeout=25, follow_redirects=True) as client:
+        lsservicos = fetch_lsservicos(params.search_url, client=client)
+        if not lsservicos:
+            raise RuntimeError("no trips found in search page HTML")
 
-    def _dep_hour(trip: dict) -> str:
-        saida = trip.get("saida", "")           # "02/06/2026 05:50"
-        return saida.rsplit(" ", 1)[-1] if " " in saida else saida
+        def _dep_hour(trip: dict) -> str:
+            saida = trip.get("saida", "")       # "02/06/2026 05:50"
+            return saida.rsplit(" ", 1)[-1] if " " in saida else saida
 
-    matching = next((t for t in lsservicos if _dep_hour(t) == params.departure), None)
-    if not matching:
-        available = [_dep_hour(t) for t in lsservicos]
-        raise RuntimeError(f"departure {params.departure} not in search results {available}")
+        matching = next((t for t in lsservicos if _dep_hour(t) == params.departure), None)
+        if not matching:
+            available = [_dep_hour(t) for t in lsservicos]
+            raise RuntimeError(f"departure {params.departure} not in search results {available}")
 
-    url = build_bus_details_url(matching, params.date)
-    bus_data = fetch_bus_details(url)
+        url = build_bus_details_url(matching, params.date)
+        bus_data = fetch_bus_details(url, client=client)
+
     if not bus_data:
         raise RuntimeError("BusDetails fetch failed")
 

@@ -68,14 +68,20 @@ _JSON_HEADERS = {
 # HTML fetch + lsServicos parse
 # ─────────────────────────────────────────────────────────────────
 
-def fetch_lsservicos(search_url: str) -> list[dict]:
+def fetch_lsservicos(
+    search_url: str, client: Optional[httpx.Client] = None
+) -> list[dict]:
     """GET the search page HTML and return the lsServicos trip list."""
     log.info(f"[htmlsearch] GET {search_url[:90]}")
     t0 = time.monotonic()
     try:
-        with httpx.Client(timeout=25, follow_redirects=True) as client:
+        if client is not None:
             resp = client.get(search_url, headers=_HTML_HEADERS)
-        resp.raise_for_status()
+            resp.raise_for_status()
+        else:
+            with httpx.Client(timeout=25, follow_redirects=True) as c:
+                resp = c.get(search_url, headers=_HTML_HEADERS)
+                resp.raise_for_status()
     except httpx.HTTPError as exc:
         raise RuntimeError(f"search page GET failed: {exc}") from exc
 
@@ -264,11 +270,16 @@ def build_bus_details_url(ls_trip: dict, date: str) -> str:
 # BusDetails fetch
 # ─────────────────────────────────────────────────────────────────
 
-def fetch_bus_details(url: str) -> Optional[dict]:
+def fetch_bus_details(
+    url: str, client: Optional[httpx.Client] = None
+) -> Optional[dict]:
     """httpx GET a BusDetails URL, return the parsed JSON body or None on failure."""
     try:
-        with httpx.Client(timeout=15, follow_redirects=True) as client:
+        if client is not None:
             resp = client.get(url, headers=_JSON_HEADERS)
+        else:
+            with httpx.Client(timeout=15, follow_redirects=True) as c:
+                resp = c.get(url, headers=_JSON_HEADERS)
         if not resp.is_success:
             log.warning(f"[htmlsearch] BusDetails HTTP {resp.status_code}")
             return None
