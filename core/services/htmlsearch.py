@@ -123,32 +123,54 @@ def _parse_lsservicos(html_content: str) -> list[dict]:
 # Seat-map flattening (shared by both search and seats paths)
 # ─────────────────────────────────────────────────────────────────
 
+def _posZ_from(seat: dict, fallback: int) -> float:
+    """Read the explicit z/posZ floor field, or fall back to the empty-row counter."""
+    for k in ("z", "posZ"):
+        v = seat.get(k)
+        if v not in (None, ""):
+            try:
+                return float(v)
+            except (TypeError, ValueError):
+                continue
+    return float(fallback)
+
+
 def _seats_from_map(seat_map: list) -> list[dict]:
     """
     Flatten seatMap into TripSeat-compatible dicts.
-    BusDetails uses x/y for grid position; posX/posY are used as output names
-    to match the TripSeat schema. Both field names are checked on input.
+
+    Mobifacil's BusDetails encodes seat position in the 2D array structure:
+      outer index n → posX (bus depth, 0=front row)
+      inner index i → posY (cross-section, corridor marker at i=2 has numero=-99)
+    posX and posY are ALWAYS the array indices — the 2D structure is the coordinate
+    system. Empty rows [] are floor separators; tracked as posZ so splitFloors()
+    can group decks correctly. Non-numeric labels (WC, ES) and -99 are excluded.
     """
     seats: list[dict] = []
-    for row in seat_map:
+    floor = 0
+    for n, row in enumerate(seat_map):
         if not isinstance(row, list):
             continue
-        for seat in row:
+        if len(row) == 0:
+            floor += 1
+            continue
+        for i, seat in enumerate(row):
             if not isinstance(seat, dict):
                 continue
-            numero = str(seat.get("numero", "")).strip()
-            if not numero or numero == "-99":
+            raw = seat.get("numero", -99)
+            if raw == -99 or str(raw) == "-99":
                 continue
+            num_str = str(raw).strip()
             try:
-                pos_x = float(seat.get("posX") or seat.get("x") or 0)
-                pos_y = float(seat.get("posY") or seat.get("y") or 0)
-            except (TypeError, ValueError):
-                pos_x = pos_y = 0.0
+                num_str = str(int(float(num_str)))  # normalise "5.0" → "5", rejects WC/ES
+            except (ValueError, OverflowError):
+                continue
             seats.append({
-                "numero": numero,
+                "numero": num_str,
                 "disponivel": bool(seat.get("disponivel", False)),
-                "posX": pos_x,
-                "posY": pos_y,
+                "posX": float(n),
+                "posY": float(i),
+                "posZ": _posZ_from(seat, floor),
             })
     return seats
 

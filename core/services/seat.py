@@ -32,36 +32,60 @@ def _iter_seats(seat_map: list):
                 yield seat
 
 
+def _posZ_from(seat: dict, fallback: int) -> float:
+    """Read the explicit z/posZ floor field from a seat dict, or use the fallback."""
+    for k in ("z", "posZ"):
+        v = seat.get(k)
+        if v not in (None, ""):
+            try:
+                return float(v)
+            except (TypeError, ValueError):
+                continue
+    return float(fallback)
+
+
 def parse_seat_map(seat_map: list) -> list[SeatInfo]:
     """Flatten the seatMap into a serialisable list for the /seats endpoint.
 
-    x = bus length (1..N, front→back), y = cross-section (0..4), z = floor
-    index (0 = ground floor, 1 = upper floor on double-deckers). Non-numeric
-    labels such as 'WC' and 'ES' are excluded, as are corridor markers (-99).
+    Mobifacil's BusDetails encodes seat position in the 2D array structure:
+      outer index n → posX (bus depth, 0=front row)
+      inner index i → posY (cross-section, 0=left-window … 4=right-window, 2=corridor)
+    posX and posY are ALWAYS the array indices — the 2D structure itself is the
+    coordinate system. Trusting any "x"/"y" field on the seat object would break
+    layout if BusDetails includes unrelated metadata under those names.
+    Empty rows (len==0) are floor separators; we track the floor index and expose
+    it as posZ so splitFloors() can group decks correctly.
+
+    Non-numeric labels (WC, ES) and corridor markers (-99) are excluded.
     """
     seats: list[SeatInfo] = []
-    for seat in _iter_seats(seat_map):
-        raw = seat.get("numero", -99)
-        if raw == -99 or str(raw) == "-99":
+    floor = 0
+    for n, row in enumerate(seat_map):
+        if not isinstance(row, list):
             continue
-        num_str = str(raw).strip()
-        try:
-            int(num_str)          # rejects WC, ES, and any other non-numeric label
-        except ValueError:
+        if len(row) == 0:
+            floor += 1
             continue
-        try:
-            pos_x = float(seat.get("posX") or seat.get("x") or 0)
-            pos_y = float(seat.get("posY") or seat.get("y") or 0)
-            pos_z = float(seat.get("z") or 0)
-        except (TypeError, ValueError):
-            pos_x = pos_y = pos_z = 0.0
-        seats.append(SeatInfo(
-            number=num_str,
-            available=bool(seat.get("disponivel", False)),
-            posX=pos_x,
-            posY=pos_y,
-            posZ=pos_z,
-        ))
+        for i, seat in enumerate(row):
+            if not isinstance(seat, dict):
+                continue
+            raw = seat.get("numero", -99)
+            if raw == -99 or str(raw) == "-99":
+                continue
+            num_str = str(raw).strip()
+            try:
+                # int(float(...)) handles both "5" and "5.0" (BusDetails may
+                # serialise integers as floats); normalise to a clean int string.
+                num_str = str(int(float(num_str)))
+            except (ValueError, OverflowError):
+                continue  # rejects WC, ES, and any other non-numeric label
+            seats.append(SeatInfo(
+                number=num_str,
+                available=bool(seat.get("disponivel", False)),
+                posX=float(n),               # outer index = bus depth (front→back)
+                posY=float(i),               # inner index = cross-section (left→right)
+                posZ=_posZ_from(seat, floor),
+            ))
     return seats
 
 

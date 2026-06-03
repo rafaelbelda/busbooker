@@ -1,5 +1,5 @@
 /* ============================================================
-   BUSBOOKER — console application core
+   BUSBOOKER,  console application core
    Search + Admin + nav + shared seat-map engine.
    Monitor lives in monitor.js (uses window.BBUI exposed here).
    ============================================================ */
@@ -93,11 +93,11 @@
     return b;
   }
   // Reservation-specific: browser-driven, can take up to ~90s.
-  const RESERVE_SUB = "browser flow is serialized server-side — please hold";
+  const RESERVE_SUB = "browser flow is serialized server-side,  please hold";
   const workingBanner = (t) => banner("proc", t || "WORKING… THIS CAN TAKE UP TO ~90 SECONDS", RESERVE_SUB, true);
   function errBanner(e) {
     if (e instanceof BB.ApiError && (e.status === 503 || e.status === 429))
-      return banner("warn", "SERVER BUSY — TRY AGAIN SHORTLY", `retry after ~${e.retryAfter}s · ${e.status === 429 ? "rate limited" : "back-pressure"}`);
+      return banner("warn", "SERVER BUSY,  TRY AGAIN SHORTLY", `retry after ~${e.retryAfter}s · ${e.status === 429 ? "rate limited" : "back-pressure"}`);
     const code = e instanceof BB.ApiError ? e.status : "";
     return banner("bad", "FAULT" + (code ? " · " + code : ""), (e && e.message) || "unknown error");
   }
@@ -145,7 +145,9 @@
     if (zVals.length > 1) {
       const groups = {};
       seats.forEach((s) => { const z = +(s.posZ || 0); (groups[z] = groups[z] || []).push(s); });
-      return zVals.map((z, idx) => ({ label: "FLOOR " + (idx + 1), seats: groups[z] }));
+      // Reverse: higher z (rows after empty-row separator) → FLOOR 1 = Primeiro Piso,
+      // matching Mobifacil's deck "1" which shows seats after the separator.
+      return [...zVals].reverse().map((z, idx) => ({ label: "FLOOR " + (idx + 1), seats: groups[z] }));
     }
     const norm = seats.map(normSeat);
     const ys = [...new Set(norm.map((s) => Math.round(s.y * 100) / 100))].sort((a, b) => a - b);
@@ -159,7 +161,7 @@
     const groups = {};
     norm.forEach((ns, i) => { const f = floorOf(ns.y); (groups[f] = groups[f] || []).push(seats[i]); });
     // Reverse: higher posX section → FLOOR 1 (matches mobifacil Primeiro Piso)
-    return Object.keys(groups).sort((a, b) => +b - +a).map((f, idx) => ({ label: "FLOOR " + (idx + 1), seats: groups[f] }));
+    return Object.keys(groups).sort((a, b) => +b - +a).map((f, idx) => ({ label: "FLOOR " + (idx + 1), seats: groups[+f] }));
   }
 
   function seatCell(s, o) {
@@ -174,7 +176,7 @@
     const interactive = s.avail && typeof o.onPick === "function" && !o.readOnly;
     const node = el(interactive ? "button" : "div", {
       class: cls,
-      "aria-label": `seat ${s.num} ${s.avail ? "free" : "taken"}${mine ? " — your seat" : ""}`,
+      "aria-label": `seat ${s.num} ${s.avail ? "free" : "taken"}${mine ? ",  your seat" : ""}`,
     });
     if (interactive) { node.type = "button"; if (sel) node.setAttribute("aria-pressed", "true"); node.addEventListener("click", () => o.onPick(s.num)); }
     node.style.width = cell + "px"; node.style.height = cell + "px";
@@ -195,7 +197,7 @@
     const map = el("div", { class: "seatmap" + (mini ? " mini" : "") });
 
     if (xs.length <= 1 || ys.length <= 1) {
-      // no usable coords (e.g. /seats has none) → sequential grid
+      // degenerate case: all seats share one axis value → sequential grid
       const cols = xs.length <= 1 ? (o.fallbackCols || 4) : xs.length;
       map.style.gridTemplateColumns = `repeat(${cols}, ${cell}px)`;
       norm.forEach((s) => map.appendChild(seatCell(s, o)));
@@ -218,11 +220,22 @@
         if (gi > 0) rowTpl.push((mini ? 4 : 14) + "px");
         grp.forEach((x) => { rowTpl.push(cell + "px"); xRowMap.set(x, rowTpl.length); });
       });
-      map.style.gridTemplateColumns = ys.map(() => cell + "px").join(" ");
+      // Bus-length axis (posX→y): build column template with gap spacers (WC/bathroom).
+      // flipY reverses front↔back direction (used for Convencional buses).
+      const orderedYs = o.flipY ? [...ys].reverse() : ys;
+      const yGapVals = orderedYs.slice(1).map((y, i) => Math.abs(y - orderedYs[i]));
+      const yMedGap = median(yGapVals.length ? yGapVals : [0]);
+      const yTpl = []; const yColMap = new Map();
+      orderedYs.forEach((y, i) => {
+        if (i > 0 && yMedGap > 0 && yGapVals[i - 1] > yMedGap * 1.7) yTpl.push((mini ? 4 : 12) + "px");
+        yTpl.push(cell + "px");
+        yColMap.set(y, yTpl.length);
+      });
+      map.style.gridTemplateColumns = yTpl.join(" ");
       map.style.gridTemplateRows = rowTpl.join(" ");
       norm.forEach((s) => {
         const c = seatCell(s, o);
-        c.style.gridColumn = nearestIndex(ys, s.y) + 1;
+        c.style.gridColumn = yColMap.get(ys[nearestIndex(ys, s.y)]);
         c.style.gridRow = xRowMap.get(xs[nearestIndex(xs, s.x)]);
         map.appendChild(c);
       });
@@ -265,7 +278,7 @@
     };
     floors.forEach((fl, i) => tabs.appendChild(el("button", {
       class: "floortab", type: "button", "aria-pressed": i === active ? "true" : "false",
-      text: (fl.label || "FLOOR " + (i + 1)) + " · " + fl.seats.filter((s) => normSeat(s).avail).length,
+      text: (fl.label || "FLOOR " + (i + 1)),
       onclick: () => show(i),
     })));
     wrap.append(tabs, stage);
@@ -295,12 +308,13 @@
     root.innerHTML = "";
 
     const CITIES = [
-      { name: "São Paulo (todos)", id: "-3" },
-      { name: "Campinas SP",       id: "19301" },
-      { name: "Ribeirão Preto SP", id: "19068" },
-      { name: "São Carlos SP",     id: "19058" },
-      { name: "Araraquara SP",     id: "19052" },
-      { name: "Florianópolis SC",  id: "-18" },
+      { name: "São Paulo, SP", id: "-3" },
+      { name: "Rio de Janeiro, RJ", id: "-36" },
+      { name: "Campinas, SP",       id: "19301" },
+      { name: "Ribeirão Preto, SP", id: "19068" },
+      { name: "São Carlos, SP",     id: "19058" },
+      { name: "Araraquara, SP",     id: "19052" },
+      { name: "Florianópolis, SC",  id: "-18" },
     ];
 
     function dateOffset(days) {
@@ -376,7 +390,7 @@
     tabCity.addEventListener("click", () => switchMode("city"));
     tabUrl.addEventListener("click",  () => switchMode("url"));
 
-    const searchBtn = el("button", { class: "btn", id: "searchBtn", type: "button", text: "▶ Search" });
+    const searchBtn = el("button", { class: "btn", id: "searchBtn", type: "button", text: "Search" });
 
     root.append(
       el("div", { class: "section" }, [
@@ -396,7 +410,10 @@
 
     if (state.searchMode === "url") switchMode("url");
     searchBtn.addEventListener("click", doSearch);
-    if (state.search) { renderTrips(); if (state.trip) renderSeatSection(); }
+    if (state.search) {
+      renderTrips();
+      if (state.trip) { $("#resultsSec").classList.add("hidden"); renderSeatSection(); }
+    }
   }
 
   async function doSearch() {
@@ -460,9 +477,9 @@
         ]),
       ]);
       card.addEventListener("click", () => {
-        // Reset seatMap so the next section fetch is fresh for this trip.
         state.trip = t; state.seat = null; state.seatMap = null; state.activeFloor = 0;
-        renderTrips();
+        renderTrips();                          // updates aria-pressed on cards
+        $("#resultsSec").classList.add("hidden");
         renderSeatSection();
       });
       list.appendChild(card);
@@ -476,7 +493,13 @@
 
     sec.classList.remove("hidden"); sec.innerHTML = "";
     sec.appendChild(el("div", { class: "legend" }, [el("span", { class: "idx", text: "03" }), "Seat select"]));
-    // departure_date is "DD/MM/YYYY" as returned by mobifacil — may differ from
+    const backBtn = el("button", { class: "btn verb sm", style: "margin-bottom:12px", text: "← Back to results" });
+    backBtn.addEventListener("click", () => {
+      sec.classList.add("hidden");
+      $("#resultsSec").classList.remove("hidden");
+    });
+    sec.appendChild(backBtn);
+    // departure_date is "DD/MM/YYYY" as returned by mobifacil,  may differ from
     // the searched date if mobifacil rolls over to the next day's results.
     const rawDate = t.departure_date ?? "";
     const fmtDate = rawDate
@@ -518,7 +541,7 @@
     } catch (e) {
       seatArea.innerHTML = "";
       if (e instanceof BB.ApiError && e.status === 404)
-        seatArea.appendChild(banner("warn", "NO MORE TRIPS FOR THIS DATE", "all departures have passed — search a future date"));
+        seatArea.appendChild(banner("warn", "NO MORE TRIPS FOR THIS DATE", "all departures have passed,  search a future date"));
       else
         seatArea.appendChild(errBanner(e));
     } finally {
@@ -558,7 +581,7 @@
     reserveBtn.dataset.forceDisabled = state.seat ? "0" : "1";
     reserveSec.append(
       reserveBtn,
-      el("p", { class: "note", text: "Reserve drives a live browser at the provider. Submit is disabled until the call returns — the endpoint is not idempotent." }),
+      el("p", { class: "note", text: "Reserve drives a live browser at the provider. Submit is disabled until the call returns,  the endpoint is not idempotent." }),
       el("div", { id: "reserveStatus", class: "spaced", style: "margin-top:12px" })
     );
     reserveBtn.addEventListener("click", doReserve);
@@ -569,7 +592,7 @@
     const s = state.search;
     // Generate 8-char hex ID client-side (same format the server uses).
     // This lets us navigate to the monitor instantly without waiting for the
-    // 90-second browser flow — the monitor polls for live status via GET /reservations/{id}.
+    // 90-second browser flow,  the monitor polls for live status via GET /reservations/{id}.
     const rid = Array.from(crypto.getRandomValues(new Uint8Array(4)))
       .map((b) => b.toString(16).padStart(2, "0")).join("");
     saveMonitorId(rid);
@@ -595,8 +618,8 @@
     renderAdminDash(root);
   }
   function renderAdminLogin(root) {
-    const pw = el("input", { type: "password", id: "adminPw", placeholder: "ADMIN_PASSWORD", autocapitalize: "off", autocomplete: "current-password" });
-    const go = el("button", { class: "btn", type: "button", text: "⤓ Authenticate" });
+    const pw = el("input", { type: "password", id: "adminPw", placeholder: "password", autocapitalize: "off", autocomplete: "current-password" });
+    const go = el("button", { class: "btn", type: "button", text: "Authenticate" });
     const status = el("div", { class: "spaced", style: "margin-top:12px" });
     root.append(el("div", { class: "section" }, [
       el("div", { class: "legend" }, [el("span", { class: "idx", text: "00" }), "Restricted · basic auth"]),

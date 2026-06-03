@@ -196,6 +196,7 @@ class TripSeat(BaseModel):
     disponivel: bool
     posX: float = 0.0
     posY: float = 0.0
+    posZ: float = 0.0
 
 
 class TripResult(BaseModel):

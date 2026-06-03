@@ -1,10 +1,3 @@
-/* ============================================================
-   BUSBOOKER — MONITOR module
-   Live reservation telemetry: ticking countdowns, availability
-   strip-chart, teletype event console, and a live bus-occupancy
-   preview (seats sell off in SIM; manual rescan in LIVE).
-   Uses window.BBUI (helpers) + window.BB (api).
-   ============================================================ */
 (function () {
   "use strict";
   const U = window.BBUI;
@@ -40,14 +33,14 @@
   /* ---------- human-readable progress line ---------- */
   function progressLine(rec) {
     switch (rec.status) {
-      case "pending": return ["WORKING", "Lock in progress — driving the provider browser…"];
+      case "pending": return ["WORKING", "Lock in progress,  driving the provider browser…"];
       case "locked": return ["NOMINAL", `Seat held. Auto re-locking to keep it until departure.`];
       case "failed":
         return rec.exit_code === 2
-          ? ["HARD FAULT", "Unrecoverable error — re-lock cycle stopped. Re-reserve to retry."]
-          : ["SOFT FAULT", "Last re-lock failed — scheduler will retry next interval."];
-      case "expired": return ["EXPIRED", "Bus has departed — monitoring stopped."];
-      case "cancelled": return ["CANCELLED", "Reservation cancelled — re-lock job removed."];
+          ? ["HARD FAULT", "Unrecoverable error,  re-lock cycle stopped. Re-reserve to retry."]
+          : ["SOFT FAULT", "Last re-lock failed,  scheduler will retry next interval."];
+      case "expired": return ["EXPIRED", "Bus has departed,  monitoring stopped."];
+      case "cancelled": return ["CANCELLED", "Reservation cancelled,  re-lock job removed."];
       default: return ["—", ""];
     }
   }
@@ -59,7 +52,7 @@
     const root = $("#view-monitor");
     root.innerHTML = "";
     const input = el("input", { type: "text", id: "monitorId", value: U.state.monitorId, placeholder: "reservation id (uuid)", autocapitalize: "off", autocomplete: "off", spellcheck: "false" });
-    const track = el("button", { class: "btn", type: "button", text: "◎ Track" });
+    const track = el("button", { class: "btn", type: "button", text: "Track" });
     root.append(
       el("div", { class: "section" }, [
         el("div", { class: "legend" }, [el("span", { class: "idx", text: "01" }), "Reservation lookup"]),
@@ -153,7 +146,7 @@
     ]);
 
     // ---- BUS OCCUPANCY ----
-    const scanBtn = el("button", { class: "btn verb browser-action", id: "mon-scan", type: "button", text: "◎ Scan bus occupancy" });
+    const scanBtn = el("button", { class: "btn verb browser-action", id: "mon-scan", type: "button", text: "Scan bus occupancy" });
     const bus = el("div", { class: "section" }, [
       el("div", { class: "legend" }, [el("span", { class: "idx", text: "03" }), "Bus occupancy"]),
       el("p", { class: "note", id: "mon-busnote", text: "Live read of the current seat map for this route. Rescan to refresh." }),
@@ -176,7 +169,7 @@
 
     // ---- CONTROLS ----
     const refresh = el("button", { class: "btn verb sm", type: "button", text: "↻ Refresh" });
-    const cancel = el("button", { class: "btn danger sm", id: "mon-cancel", type: "button", text: "✕ Cancel reservation" });
+    const cancel = el("button", { class: "btn danger sm", id: "mon-cancel", type: "button", text: "Cancel reservation" });
     const ctrlStatus = el("div", { class: "spaced", style: "margin-top:10px" });
     const ctrl = el("div", { class: "section" }, [el("div", { class: "btnrow" }, [refresh, cancel]), ctrlStatus]);
     refresh.addEventListener("click", () => start(M.id));
@@ -198,7 +191,7 @@
   const rowSeg = (label, id) => el("div", { class: "kv" }, [el("span", { class: "k", text: label }), el("span", { class: "v seg7", id })]);
 
   /* ====================================================================
-     UPDATE (from record/scheduler) — every poll
+     UPDATE (from record/scheduler),  every poll
      ==================================================================== */
   const STATUSES = ["pending", "locked", "failed", "cancelled", "expired"];
   function update() {
@@ -242,7 +235,7 @@
   function setText(id, v) { const n = $("#" + id); if (n) n.textContent = v; }
 
   /* ====================================================================
-     TICK (1 s) — live countdowns
+     TICK (1 s),  live countdowns
      ==================================================================== */
   function tick() {
     if (!M || !M.rec) return;
@@ -276,7 +269,7 @@
     appendLog("SEAT-MAP SCAN REQUESTED", "");
     try {
       const res = await BB.getSeats({ origin_id: r.origin_id, destination_id: r.destination_id, date: r.date, departure: r.departure });
-      // SeatInfo shape: {number, available} — normSeat handles both this and TripSeat.
+      // SeatInfo shape: {number, available},  normSeat handles both this and TripSeat.
       M.seats = res.seats || [];
       M.total = res.total; M.avail = res.available;
       M.history = [res.available];

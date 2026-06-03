@@ -134,7 +134,9 @@ def _parse_bus_details(data: dict, params: RouteParams) -> Optional[dict]:
         # isDistribusion is a Python bool from BusDetails; str(True) = "True"
         # which the server rejects — always lower-case.
         "isDistribusion": str(trip.get("isDistribusion", True)).lower(),
-        "seatsWithPrice": trip.get("seatsWithPrice", ""),
+        # Mobifacil sets busMap.seatsWithPrice = trip.seatMap (the raw 2D array).
+        # BusDetails never returns a "seatsWithPrice" field — use seatMap directly.
+        "seatsWithPrice": trip.get("seatMap", []),
         "departure": trip.get("departure", dep),
     }
 

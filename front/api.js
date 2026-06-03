@@ -59,7 +59,7 @@
       });
     } catch (e) {
       clearTimeout(to);
-      const msg = e && e.name === "AbortError" ? "request timed out" : "network error — backend unreachable";
+      const msg = e && e.name === "AbortError" ? "request timed out" : "network error,  backend unreachable";
       throw new ApiError(0, msg);
     }
     clearTimeout(to);
