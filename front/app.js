@@ -555,7 +555,7 @@
       selected: state.seat, activeFloor: state.activeFloor,
       transpose: true,
       onFloor: (i) => { state.activeFloor = i; },
-      onPick: (num) => { state.seat = num; renderReserveControl(reserveSec); },
+      onPick: (num) => { state.seat = num; renderSeatPicker(seatArea, reserveSec); },
     }));
     seatArea.appendChild(el("div", { class: "seatlegend" }, [
       el("span", {}, [el("i", { class: "a" }), "free"]),
@@ -590,20 +590,20 @@
   function doReserve() {
     if (!state.trip || !state.seat || state.reserving) return;
     const s = state.search;
-    // Generate 8-char hex ID client-side (same format the server uses).
-    // This lets us navigate to the monitor instantly without waiting for the
-    // 90-second browser flow,  the monitor polls for live status via GET /reservations/{id}.
     const rid = Array.from(crypto.getRandomValues(new Uint8Array(4)))
       .map((b) => b.toString(16).padStart(2, "0")).join("");
     saveMonitorId(rid);
-    switchView("monitor");
-    // Fire the reservation in the background; PROC lamp stays amber until done.
     state.reserving = true; setBrowserBusy(true);
+    // POST first: the server creates the record synchronously (status=pending) before
+    // starting the 90-second browser flow, so the monitor can find it immediately.
     BB.createReservation({
       id: rid,
       origin_id: s.origin_id, destination_id: s.destination_id,
       date: s.date, departure: state.trip.departure, seat: state.seat,
     }).catch(() => {}).finally(() => { state.reserving = false; setBrowserBusy(false); });
+    // Delay the view switch slightly so the POST reaches the server and the record
+    // exists by the time the monitor fires its first GET /reservations/{id}.
+    setTimeout(() => switchView("monitor"), 1200);
   }
 
   function saveMonitorId(id) { state.monitorId = id; localStorage.setItem("bb_resv", id); }
