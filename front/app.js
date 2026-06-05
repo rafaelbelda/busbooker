@@ -309,11 +309,12 @@
 
     const CITIES = [
       { name: "São Paulo, SP", id: "-3" },
-      { name: "Rio de Janeiro, RJ", id: "-36" },
       { name: "Campinas, SP",       id: "19301" },
       { name: "Ribeirão Preto, SP", id: "19068" },
-      { name: "São Carlos, SP",     id: "19058" },
+      { name: "Piracicaba, SP",     id: "19212" },
       { name: "Araraquara, SP",     id: "19052" },
+      { name: "São Carlos, SP",     id: "19058" },
+      { name: "Rio de Janeiro, RJ", id: "-36" },
       { name: "Florianópolis, SC",  id: "-18" },
     ];
 
