@@ -73,13 +73,14 @@
     if (!body) return;
     body.innerHTML = "";
     body.appendChild(banner("proc", "ACQUIRING TELEMETRY…", "reading reservation record", true));
-    M = { id, rec: null, sched: null, job: null, depMs: null, relockMs: null, timers: [], lastRelock: -1, built: false,
+    M = { id, rec: null, sched: null, job: null, depMs: null, relockMs: null, arrivalMs: null, timers: [], lastRelock: -1, built: false,
           seats: null, decks: null, total: 0, avail: 0, history: [], logEl: null };
     await poll(true);
     if (!M) return;
     if (M.dead) return;
     buildBody();
     update();
+    scan();  // auto-scan on load; runs in background
     M.timers.push(setInterval(() => poll(false), 20000));
     M.timers.push(setInterval(tick, 1000));
     M.timers.push(setInterval(pollLog, 5000));  // live tail of the server flow log
@@ -114,6 +115,7 @@
       M.relockMs = M.job && M.job.next_run ? new Date(M.job.next_run).getTime() : null;
     } catch (_) { /* read-only, ignore */ }
 
+    M.arrivalMs = rec.arrival_datetime ? new Date(rec.arrival_datetime).getTime() : null;
     if (!first && M.built) {
       // A re-lock just ran → refresh the flow log promptly to show its output.
       if (M.rec.relock_count > M.lastRelock && M.lastRelock >= 0) pollLog();
@@ -143,7 +145,7 @@
       el("div", { class: "progline", id: "mon-prog" }),
       el("div", { class: "twocount" }, [
         el("div", { class: "bigcount" }, [
-          el("div", { class: "lab", text: "Time to departure" }),
+          el("div", { class: "lab", id: "mon-dep-lab", text: "Time to departure" }),
           el("div", { class: "val", id: "mon-dep", text: "--:--:--" }),
           el("div", { class: "timebar" }, [el("div", { class: "timebar-fill", id: "mon-dep-bar" })]),
         ]),
@@ -160,14 +162,11 @@
     ]);
 
     // ---- BUS OCCUPANCY ----
-    const scanBtn = el("button", { class: "btn verb browser-action", id: "mon-scan", type: "button", text: "Scan bus occupancy" });
     const bus = el("div", { class: "section" }, [
       el("div", { class: "legend" }, ["Bus occupancy"]),
-      el("p", { class: "note", id: "mon-busnote", text: "Live read of the current seat map for this route. Rescan to refresh." }),
-      scanBtn,
+      el("p", { class: "note", id: "mon-busnote", text: "Auto-scans on load. Use Rescan to refresh." }),
       el("div", { id: "mon-busbody", class: "spaced", style: "margin-top:12px" }),
     ]);
-    scanBtn.addEventListener("click", scan);
 
     // ---- LIVE FLOW LOG (real server-side per-reservation log) ----
     const con = el("div", { class: "section" }, [
@@ -244,30 +243,60 @@
   function setText(id, v) { const n = $("#" + id); if (n) n.textContent = v; }
 
   /* ====================================================================
-     TICK (1 s),  live countdowns
+     TICK (1 s),  live countdowns — ETA state machine
      ==================================================================== */
   function tick() {
     if (!M || !M.rec) return;
+    const now = Date.now();
     const dep = $("#mon-dep");
-    if (dep) {
-      if (!M.depMs) { dep.textContent = "--:--:--"; dep.className = "val"; }
-      else {
-        const remain = Math.round((M.depMs - Date.now()) / 1000);
-        const c = cd(M.depMs);
-        dep.textContent = c.neg ? "DEPARTED" : c.txt;
-        dep.className = "val" + (c.neg ? " bad" : remain < 1800 ? " warn" : "");
-      }
-    }
+    const depLab = $("#mon-dep-lab");
     const depBar = $("#mon-dep-bar");
-    if (depBar && M.depMs && M.rec.created_at) {
-      const createdMs = new Date(M.rec.created_at).getTime();
-      const total = M.depMs - createdMs;
-      const elapsed = Date.now() - createdMs;
-      const pct = total > 0 ? Math.min(100, Math.max(0, (elapsed / total) * 100)) : 0;
-      depBar.style.width = pct + "%";
-      const remain = M.depMs - Date.now();
-      depBar.className = "timebar-fill" + (remain < 0 ? " bad" : remain < 1800000 ? " warn" : "");
+
+    if (!M.depMs) {
+      // No departure time known yet
+      if (depLab) depLab.textContent = "Time to departure";
+      if (dep) { dep.textContent = "--:--:--"; dep.className = "val"; }
+    } else if (now < M.depMs) {
+      // PRE-DEPARTURE: count down to departure
+      if (depLab) depLab.textContent = "Time to departure";
+      const remain = M.depMs - now;
+      const c = cd(M.depMs);
+      if (dep) { dep.textContent = c.txt; dep.className = "val" + (remain < 1800000 ? " warn" : ""); }
+      if (depBar && M.rec.created_at) {
+        const createdMs = new Date(M.rec.created_at).getTime();
+        const total = M.depMs - createdMs;
+        const elapsed = now - createdMs;
+        const pct = total > 0 ? Math.min(100, Math.max(0, (elapsed / total) * 100)) : 0;
+        depBar.style.width = pct + "%";
+        depBar.className = "timebar-fill" + (remain < 1800000 ? " warn" : "");
+      }
+    } else if (M.arrivalMs && now < M.arrivalMs) {
+      // IN TRANSIT: ETA countdown (departure → arrival)
+      if (depLab) depLab.textContent = "ETA";
+      const remain = M.arrivalMs - now;
+      const c = cd(M.arrivalMs);
+      if (dep) { dep.textContent = c.txt; dep.className = "val" + (remain < 1800000 ? " warn" : ""); }
+      if (depBar) {
+        const total = M.arrivalMs - M.depMs;
+        const elapsed = now - M.depMs;
+        const pct = total > 0 ? Math.min(100, Math.max(0, (elapsed / total) * 100)) : 0;
+        depBar.style.width = pct + "%";
+        depBar.className = "timebar-fill ok";
+      }
+    } else if (M.arrivalMs && now >= M.arrivalMs) {
+      // ARRIVED — stop all timers, final display
+      if (depLab) depLab.textContent = "Arrived";
+      if (dep) { dep.textContent = "ARRIVED"; dep.className = "val ok"; }
+      if (depBar) { depBar.style.width = "100%"; depBar.className = "timebar-fill ok"; }
+      (M.timers || []).forEach(clearInterval);
+      M.timers = [];
+    } else {
+      // DEPARTED with no arrival data
+      if (depLab) depLab.textContent = "Departed";
+      if (dep) { dep.textContent = "DEPARTED"; dep.className = "val bad"; }
+      if (depBar) { depBar.style.width = "100%"; depBar.className = "timebar-fill bad"; }
     }
+
     const rl = $("#mon-relock");
     if (rl) {
       const terminal = M.rec.status === "cancelled" || M.rec.status === "expired";

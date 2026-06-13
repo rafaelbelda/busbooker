@@ -111,6 +111,8 @@ class ReservationRecord(BaseModel):
     # Absolute UTC departure datetime; set once the first lock succeeds and the
     # trip resolves. Drives the scheduler's expiry decision.
     departure_datetime: Optional[datetime] = None
+    # Absolute UTC arrival datetime; set on first lock when arrivalHour is available.
+    arrival_datetime: Optional[datetime] = None
     # Incremented on each successful re-lock cycle.
     relock_count: int = 0
 

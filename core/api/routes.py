@@ -42,7 +42,7 @@ from ..state import FLOW_LOCK, store, uptime_seconds
 from ..utils.logger import log, read_reservation_log
 from ..utils.net import client_info
 from ..utils.ratelimit import browser_guard
-from ..utils.time_utils import compute_departure_datetime
+from ..utils.time_utils import compute_arrival_datetime, compute_departure_datetime
 
 router = APIRouter()
 
@@ -200,6 +200,12 @@ async def create_reservation(
         seat=req.seat,
     )
     now = datetime.now(timezone.utc)
+    dep_dt_check = compute_departure_datetime(req.date, req.departure)
+    hours_ahead = (dep_dt_check - now).total_seconds() / 3600
+    if hours_ahead < 0:
+        raise HTTPException(status_code=422, detail="departure is in the past")
+    if hours_ahead > 48:
+        raise HTTPException(status_code=422, detail="departure is more than 48 hours in the future")
     record = ReservationRecord(
         id=req.id or str(uuid4()).split("-")[0],  # client-supplied or server-generated
         origin_id=params.origin_id,
@@ -229,14 +235,21 @@ async def create_reservation(
         updated = await _finalise(record.id, 2)
         return await _terminal_or(record.id, updated, response)
 
-    # On a successful first lock, record the absolute departure datetime and
-    # register the per-reservation re-lock cycle.
+    # On a successful first lock, record the absolute departure and arrival datetimes
+    # and register the per-reservation re-lock cycle.
     departure_dt = None
+    arrival_dt = None
     if code == 0 and trip is not None:
         departure_dt = compute_departure_datetime(params.date, params.departure)
+        arr_hhmm = trip.get("arrivalHour", "")
+        if arr_hhmm:
+            try:
+                arrival_dt = compute_arrival_datetime(params.date, params.departure, arr_hhmm)
+            except Exception as exc:
+                log.warning(f"[/reservations] arrival_datetime skipped: {exc!r}")
 
     response.status_code = _EXIT_HTTP.get(code, 500)
-    updated = await _finalise(record.id, code, departure_dt=departure_dt)
+    updated = await _finalise(record.id, code, departure_dt=departure_dt, arrival_dt=arrival_dt)
     if updated is None:
         # Reservation was cancelled/deleted while the flow ran — never resurrect
         # it or schedule a re-lock for a seat the user no longer wants.
@@ -257,6 +270,7 @@ async def _finalise(
     record_id: str,
     code: int,
     departure_dt: Optional[datetime] = None,
+    arrival_dt: Optional[datetime] = None,
 ) -> Optional[ReservationRecord]:
     """Apply the flow outcome — but never revert a reservation that became
     terminal (cancelled/expired) or was deleted while the flow ran.
@@ -271,6 +285,8 @@ async def _finalise(
     }
     if departure_dt is not None:
         fields["departure_datetime"] = departure_dt
+    if arrival_dt is not None:
+        fields["arrival_datetime"] = arrival_dt
     return await store.update(record_id, only_if_active=True, **fields)
 
 
