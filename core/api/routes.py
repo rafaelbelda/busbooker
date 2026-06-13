@@ -98,7 +98,7 @@ async def get_seats(
     loop = asyncio.get_running_loop()
     try:
         # No FLOW_LOCK: fetch_seat_map uses httpx, not the browser session.
-        seats = await loop.run_in_executor(None, fetch_seat_map, params)
+        seats, decks = await loop.run_in_executor(None, fetch_seat_map, params)
     except RuntimeError as exc:
         if "no more trips for this date" in str(exc):
             log.info(f"[/seats] {exc}")
@@ -117,6 +117,7 @@ async def get_seats(
         total=len(seats),
         available=sum(1 for s in seats if s.available),
         seats=seats,
+        decks=decks,
     )
 
 

@@ -75,7 +75,7 @@
     body.innerHTML = "";
     body.appendChild(banner("proc", "ACQUIRING TELEMETRY…", "reading reservation record", true));
     M = { id, rec: null, sched: null, job: null, depMs: null, relockMs: null, timers: [], lastRelock: -1, built: false,
-          seats: null, total: 0, avail: 0, history: [], logEl: null };
+          seats: null, decks: null, total: 0, avail: 0, history: [], logEl: null };
     await poll(true);
     if (!M) return;
     if (M.dead) return;
@@ -277,6 +277,7 @@
       const res = await BB.getSeats({ origin_id: r.origin_id, destination_id: r.destination_id, date: r.date, departure: r.departure });
       // SeatInfo shape: {number, available},  normSeat handles both this and TripSeat.
       M.seats = res.seats || [];
+      M.decks = res.decks || [];   // exact mobifacil grid for the seat picker render
       M.total = res.total; M.avail = res.available;
       M.history = [res.available];
       out.innerHTML = "";
@@ -299,7 +300,7 @@
         U.stat(String(M.total - avail), "taken", avail < M.total * 0.25 ? "bad" : ""),
       ]),
       chartEl(),
-      buildSeatMap(M.seats, { mine: M.rec.seat, readOnly: true }),
+      buildSeatMap(M.seats, { decks: M.decks, mine: M.rec.seat, readOnly: true }),
       el("div", { class: "seatlegend" }, [
         el("span", {}, [el("i", { class: "a" }), "free"]),
         el("span", {}, [el("i", { class: "t" }), "taken"]),

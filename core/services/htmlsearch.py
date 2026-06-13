@@ -175,6 +175,74 @@ def _seats_from_map(seat_map: list) -> list[dict]:
     return seats
 
 
+def _classify_cell(numero, i: int) -> tuple[str, str]:
+    """Return ``(kind, label)`` for a raw seatMap cell, mirroring mobifacil's own
+    render classes: hall (aisle) when ``i==2 || numero=='ES' || numero==-99``,
+    ``bathroom`` for WC, otherwise a numbered seat. ES/GE are labelled landmarks."""
+    s = str(numero).strip()
+    if s == "-99":
+        return "aisle", ""
+    if s == "WC":
+        return "bathroom", "WC"
+    if s in ("ES", "GE"):
+        return "marker", s
+    if i == 2:                       # central column is always the aisle
+        return "aisle", ""
+    return "seat", s                 # numbered, bookable
+
+
+def build_seat_decks(seat_map: list) -> list[dict]:
+    """Convert mobifacil's raw 2D seatMap into decks→rows→cells, EXACTLY matching
+    how mobifacil renders it — so the frontend never has to guess aisle/floor layout.
+
+    - Every cell keeps its grid slot (aisles and landmarks included) so columns stay
+      aligned, instead of dropping -99/WC/ES/GE the way the flat seat list does.
+    - Decks are split on EMPTY rows — mobifacil's ``hasSecondFloor`` rule
+      (``seatMap.some(row => row.length === 0)``). The per-seat ``z`` field is
+      deliberately ignored: it is unreliable (all "0" even on the upper deck).
+    - Floor order matches mobifacil's FloorSwitch: the segment AFTER the divider is
+      Primeiro Piso (FLOOR 1, shown first); the segment BEFORE it is Segundo Piso.
+    """
+    segments: list[list] = []
+    current: list = []
+    for row in seat_map:
+        if not isinstance(row, list):
+            continue
+        if len(row) == 0:            # divider between decks
+            if current:
+                segments.append(current)
+                current = []
+            continue
+        current.append(row)
+    if current:
+        segments.append(current)
+    if not segments:
+        return []
+
+    def _rows(segment: list) -> list[list[dict]]:
+        out: list[list[dict]] = []
+        for row in segment:
+            cells: list[dict] = []
+            for i, seat in enumerate(row):
+                if not isinstance(seat, dict):
+                    continue
+                kind, label = _classify_cell(seat.get("numero", -99), i)
+                cells.append({
+                    "kind": kind,
+                    "number": label,
+                    "available": bool(seat.get("disponivel", False)),
+                    "idoso": bool(seat.get("idoso", False)),
+                })
+            out.append(cells)
+        return out
+
+    decks = [_rows(seg) for seg in segments]
+    # After-divider segment first (Primeiro Piso) when the coach is double-decker.
+    if len(decks) > 1:
+        decks = decks[::-1]
+    return [{"label": f"FLOOR {idx + 1}", "rows": rows} for idx, rows in enumerate(decks)]
+
+
 # ─────────────────────────────────────────────────────────────────
 # Trip dict builders
 # ─────────────────────────────────────────────────────────────────

@@ -98,6 +98,15 @@ def check_seat_availability(seat_map: list, params: RouteParams) -> bool:
             continue
         num_norm = str(raw).strip().lstrip("0") or "0"
         if num_norm == target_norm or str(raw).strip() == target:
+            # Priority (idoso) seats are reservable only via attendance — mobifacil's
+            # own UI blocks them client-side, and a LockSeat POST would be refused.
+            # Treat as unavailable so we fail fast with a clear reason.
+            if seat.get("idoso"):
+                log.warning(
+                    f"[step 3] seat '{target}' is a priority/idoso seat — "
+                    "reservable only via attendance, not bookable here"
+                )
+                return False
             avail = seat.get("disponivel", False)
             log.info(f"[step 3] seat '{target}' → disponivel={avail}")
             return bool(avail)
@@ -283,6 +292,41 @@ def _coerce_seats_with_price(trip: dict) -> str:
     return str(raw) if raw not in (None, "") else ""
 
 
+def _info_connection(trip: dict) -> str:
+    """
+    Build LockSeat's ``infoConnection`` value, mirroring mobifacil's frontend
+    (``infoConnection = busDetails.objConnection || null``). The server
+    ``JSON.parse``s this field, so it must always be present and parseable:
+    the real connection object as JSON when the trip has one, otherwise the
+    literal string ``"null"`` (which ``JSON.parse`` reads as null). Never ""
+    and never absent — either makes the server parse ``undefined`` and fail.
+    """
+    obj_conn = trip.get("objConnection")
+    if obj_conn:
+        return json.dumps(obj_conn, separators=(",", ":"))
+    return "null"
+
+
+def _resolve_seat_label(trip: dict, requested: str) -> str:
+    """
+    Mobifacil's LockSeat sends ``seat = t.numero`` — the seatMap's RAW label,
+    which is zero-padded ("05"), not the normalised "5" our /seats endpoint
+    exposes (parse_seat_map strips the leading zero). Map the requested seat back
+    to the exact ``numero`` string from the seatMap so the server matches it;
+    fall back to the requested value if the seat isn't found.
+    """
+    target = requested.strip().lstrip("0") or "0"
+    seat_map = trip.get("seatMap") or trip.get("seatsWithPrice") or []
+    for seat in _iter_seats(seat_map):
+        raw = seat.get("numero")
+        if raw in (-99, "-99", None):
+            continue
+        num = str(raw).strip()
+        if num == requested.strip() or (num.lstrip("0") or "0") == target:
+            return num
+    return requested.strip()
+
+
 def _build_lock_payload(trip: dict, params: RouteParams) -> dict:
     seats_with_price = _coerce_seats_with_price(trip)
     payload = {
@@ -293,7 +337,9 @@ def _build_lock_payload(trip: dict, params: RouteParams) -> dict:
         "service": trip["service"],
         "departureHour": params.departure,
         "group": trip.get("group", "TOTAL_BUS"),
-        "seat": params.seat,
+        # seat must be the seatMap's raw numero ("05"), matching mobifacil's
+        # `seat = t.numero`, not the normalised request value ("5").
+        "seat": _resolve_seat_label(trip, params.seat),
         "arrival": trip.get("arrival", trip.get("arrivalHour", "")),
         "company": trip.get("company", ""),
         "departure": trip.get("departure", params.departure),
@@ -308,7 +354,14 @@ def _build_lock_payload(trip: dict, params: RouteParams) -> dict:
         "upsellOriginalServiceNo": trip["service"],
         "upsellOriginalTime": params.departure.replace(":", ""),
         "seatMap": seats_with_price,
-        "infoConnection": "",
+        # The server JSON.parses infoConnection (LockSeatModel.js:115). Mobifacil's
+        # own frontend ALWAYS appends it: `infoConnection = objConnection || null`,
+        # which URLSearchParams coerces to the literal string "null" for
+        # non-connection trips. Sending "" — or dropping the field via the
+        # empty-filter below — makes the server parse `undefined`, producing
+        # "Unexpected token: u" (JSON.parse(undefined)). Always send a parseable
+        # value: real connection JSON when present, else the string "null".
+        "infoConnection": _info_connection(trip),
         "raceDate": trip.get("raceDate", params.date),
         "fareId": trip["fareId"],
         "fareCode": trip.get("fareCode", "FARE-1"),
@@ -330,16 +383,19 @@ def lock_seat_api(page: Page, trip: dict, params: RouteParams) -> bool:
     log.info(f"[step 4] LockSeat payload: {json.dumps(payload, indent=2)[:500]}")
 
     def _post() -> bool:
+        # Headers mirror mobifacil's own fetch: only Content-Type. (Referer is kept
+        # for anti-bot parity — a real browser would send it automatically.)
         resp = page.request.post(
             settings.base_url + LOCK_SEAT_PATH,
             form=payload,
             headers={
                 "Referer": settings.base_url + "/passagem-de-onibus/",
-                "X-Requested-With": "XMLHttpRequest",
                 "Content-Type": "application/x-www-form-urlencoded; charset=UTF-8",
             },
             timeout=25_000,
         )
+        # Transient/infra problems are worth retrying (the seat may free, the edge
+        # may hiccup). A 200 with a server-level error is a *decision*, not a glitch.
         if resp.status != 200:
             raise RuntimeError(f"LockSeat API HTTP {resp.status}")
         try:
@@ -350,10 +406,19 @@ def lock_seat_api(page: Page, trip: dict, params: RouteParams) -> bool:
         log.info(f"[step 4] LockSeat response: {json.dumps(data)[:400]}")
         if data.get("error") or not data.get("success"):
             error_msg = data.get("message", "Unknown error")
+            title = data.get("title", "")
             if "Unexpected token" in error_msg:
-                log.error("[step 4] Server JSON parse error — likely malformed payload")
+                # Server couldn't parse our payload — retrying won't help, and a
+                # malformed payload is a code bug, not a busy seat. Log loudly and
+                # stop (return False → exit 1) instead of resetting the browser.
+                log.error("[step 4] Server JSON parse error — malformed payload (bug)")
                 log.error(f"[step 4] Full payload sent: {json.dumps(payload)}")
-            raise RuntimeError(f"LockSeat failed: {error_msg}")
+                return False
+            # Business decline (seat taken / not lockable). Mirrors the frontend,
+            # which just surfaces o.error. Don't retry or reset the browser — report
+            # unavailable so the scheduler retries on its normal interval.
+            log.warning(f"[step 4] LockSeat declined: {title or error_msg}")
+            return False
 
         log.info(f"[step 4] LockSeat success — uuid={data.get('seatUUID')}")
         return True

@@ -48,7 +48,8 @@
   const state = {
     view: "search",
     search: null, trip: null, seat: null,
-    seatMap: null,   // fetched from GET /seats when a trip is selected
+    seatMap: null,   // flat seat list from GET /seats (counts + legacy fallback)
+    decks: null,     // exact mobifacil grid (decks→rows→cells) from GET /seats
     activeFloor: 0,
     reserving: false, browserBusy: false,
     monitorId: localStorage.getItem("bb_resv") || "",
@@ -261,8 +262,108 @@
     return wrap;
   }
 
+  /* ── Grid renderer that mirrors mobifacil's seatMap EXACTLY ──────────────
+     Backend /seats now ships `decks` (decks→rows→cells), where each row is a
+     depth-slice (front→back) and each cell is {kind, number, available, idoso}.
+     We render that literal grid — no aisle/floor guessing — keeping our visual
+     style. To match our existing horizontal coach, the grid is transposed:
+     depth-slices → columns (left→right), cross-section → rows (top→bottom),
+     with all-aisle cross-rows collapsed to a thin corridor. */
+  const sameSeat = (a, b) =>
+    a != null && b != null &&
+    (String(a).trim() === String(b).trim() ||
+     String(a).replace(/^0+/, "") === String(b).replace(/^0+/, ""));
+
+  function deckCell(c, o, hPx) {
+    const cell = o.cell || 44;
+    const w = cell + "px", h = hPx + "px";
+    if (!c || c.kind === "aisle") {
+      const d = el("div", { class: "seat aisle" });
+      d.style.width = w; d.style.height = h;
+      return d;
+    }
+    if (c.kind === "bathroom" || c.kind === "marker") {
+      const d = el("div", { class: "seat marker" + (c.kind === "bathroom" ? " bathroom" : ""), title: c.number });
+      d.style.width = w; d.style.height = h;
+      if (o.labels !== false) { d.textContent = c.number; d.style.fontSize = Math.max(8, Math.round(cell * 0.26)) + "px"; }
+      return d;
+    }
+    // a real seat
+    const sel = sameSeat(o.selected, c.number);
+    const mine = sameSeat(o.mine, c.number);
+    let cls = "seat " + (!c.available ? "taken" : "avail");
+    if ((o.cell || 44) <= 14) cls += " mini";
+    if (sel) cls += " sel";
+    if (mine) cls += " mine";
+    if (c.idoso) cls += " priority";
+    const interactive = c.available && typeof o.onPick === "function" && !o.readOnly;
+    const node = el(interactive ? "button" : "div", {
+      class: cls,
+      "aria-label": `seat ${c.number} ${c.available ? "free" : "taken"}${c.idoso ? ",  priority" : ""}${mine ? ",  your seat" : ""}`,
+    });
+    node.style.width = w; node.style.height = h;
+    if (interactive) { node.type = "button"; if (sel) node.setAttribute("aria-pressed", "true"); node.addEventListener("click", () => o.onPick(c.number)); }
+    if (o.labels !== false) { node.textContent = c.number; node.style.fontSize = Math.max(9, Math.round(cell * 0.32)) + "px"; }
+    return node;
+  }
+
+  /* Render ONE deck (mobifacil rows = depth-slices) into our transposed grid. */
+  function renderDeck(deck, o = {}) {
+    const cell = o.cell || 44, mini = !!o.mini;
+    const rows = deck.rows || [];
+    const D = rows.length;                                   // depth-slices → columns
+    const C = rows.reduce((m, r) => Math.max(m, r.length), 0); // cross-section → rows
+    const aislePx = mini ? 4 : 16;
+    // A cross-section row is the corridor when every depth-slice has aisle/marker there.
+    const rowH = [];
+    for (let c = 0; c < C; c++) {
+      const thin = rows.every((r) => { const x = r[c]; return !x || x.kind === "aisle" || x.kind === "marker"; });
+      rowH.push(thin ? aislePx : cell);
+    }
+    const wrap = el("div", { class: "seatmap-wrap" + (mini ? " mini" : "") });
+    const map = el("div", { class: "seatmap" + (mini ? " mini" : "") });
+    map.style.gridTemplateColumns = `repeat(${D}, ${cell}px)`;
+    map.style.gridTemplateRows = rowH.map((h) => h + "px").join(" ");
+    rows.forEach((r, d) => {
+      for (let c = 0; c < C; c++) {
+        const node = deckCell(r[c], o, rowH[c]);
+        node.style.gridColumn = d + 1;
+        node.style.gridRow = c + 1;
+        map.appendChild(node);
+      }
+    });
+    wrap.appendChild(map);
+    return wrap;
+  }
+
+  /* Decks renderer with a floor toggle when the coach is double-decker. */
+  function buildDeckMap(decks, o = {}) {
+    if (decks.length <= 1) return renderDeck(decks[0] || { rows: [] }, o);
+    const wrap = el("div", { class: "floorwrap" });
+    const tabs = el("div", { class: "floortabs" });
+    const stage = el("div");
+    let active = Math.min(o.activeFloor || 0, decks.length - 1);
+    const show = (i) => {
+      active = i;
+      if (o.onFloor) o.onFloor(i);
+      stage.innerHTML = "";
+      stage.appendChild(renderDeck(decks[i], o));
+      [...tabs.children].forEach((b, bi) => b.setAttribute("aria-pressed", bi === i ? "true" : "false"));
+    };
+    decks.forEach((fl, i) => tabs.appendChild(el("button", {
+      class: "floortab", type: "button", "aria-pressed": i === active ? "true" : "false",
+      text: fl.label || "FLOOR " + (i + 1), onclick: () => show(i),
+    })));
+    wrap.append(tabs, stage);
+    show(active);
+    return wrap;
+  }
+
   /* Full interactive map with a floor toggle when the coach is double-decker. */
   function buildSeatMap(seats, o = {}) {
+    // Preferred path: the exact mobifacil grid shipped by /seats.
+    if (o.decks && o.decks.length) return buildDeckMap(o.decks, o);
+    // Legacy fallback: reconstruct from the flat seat list (no grid available).
     const floors = splitFloors(seats);
     if (floors.length <= 1) return gridMap(seats, o);
     const wrap = el("div", { class: "floorwrap" });
@@ -440,7 +541,7 @@
     status.appendChild(banner("proc", "SEARCHING TRIPS…", "fetching mobifacil route HTML", true));
     try {
       const res = await BB.search(url);
-      state.search = res; state.trip = null; state.seat = null; state.seatMap = null; state.activeFloor = 0;
+      state.search = res; state.trip = null; state.seat = null; state.seatMap = null; state.decks = null; state.activeFloor = 0;
       status.innerHTML = "";
       const n = (res.trips || []).length;
       status.appendChild(banner("ok", `${n} TRIP${n === 1 ? "" : "S"} FOUND`, `route ${res.origin_id} → ${res.destination_id} · ${res.date}`));
@@ -478,7 +579,7 @@
         ]),
       ]);
       card.addEventListener("click", () => {
-        state.trip = t; state.seat = null; state.seatMap = null; state.activeFloor = 0;
+        state.trip = t; state.seat = null; state.seatMap = null; state.decks = null; state.activeFloor = 0;
         renderTrips();                          // updates aria-pressed on cards
         $("#resultsSec").classList.add("hidden");
         renderSeatSection();
@@ -534,9 +635,10 @@
         origin_id: s.origin_id, destination_id: s.destination_id,
         date: s.date, departure: t.departure,
       });
-      // SeatInfo {number, available} → normSeat-compatible shape.
-      // No position data from /seats; gridMap falls back to sequential layout.
+      // `decks` is the exact mobifacil grid (preferred render); `seats` stays the
+      // flat list for counts and the legacy fallback.
       state.seatMap = seatsRes.seats || [];
+      state.decks = seatsRes.decks || [];
       seatArea.innerHTML = "";
       renderSeatPicker(seatArea, reserveSec);
     } catch (e) {
@@ -553,7 +655,7 @@
   function renderSeatPicker(seatArea, reserveSec) {
     seatArea.innerHTML = "";
     seatArea.appendChild(buildSeatMap(state.seatMap || [], {
-      selected: state.seat, activeFloor: state.activeFloor,
+      decks: state.decks, selected: state.seat, activeFloor: state.activeFloor,
       transpose: true,
       onFloor: (i) => { state.activeFloor = i; },
       onPick: (num) => { state.seat = num; renderSeatPicker(seatArea, reserveSec); },

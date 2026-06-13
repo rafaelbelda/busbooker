@@ -191,14 +191,18 @@ def run_flow(params: RouteParams) -> tuple[int, dict | None]:
     return code, trip
 
 
-def fetch_seat_map(params: RouteParams) -> list[SeatInfo]:
+def fetch_seat_map(params: RouteParams) -> tuple[list[SeatInfo], list[dict]]:
     """
     Playwright-free seat map fetch: HTML parse + direct BusDetails call.
     No browser navigation needed — the search page is server-rendered.
+
+    Returns ``(seats, decks)`` — the flat seat list (for counts) and the full grid
+    (decks→rows→cells) that mirrors mobifacil's own render for the seat picker.
     """
     import httpx
     from .htmlsearch import (
         build_bus_details_url,
+        build_seat_decks,
         fetch_bus_details,
         fetch_lsservicos,
         filter_trips_by_date,
@@ -233,11 +237,12 @@ def fetch_seat_map(params: RouteParams) -> list[SeatInfo]:
     if not trips:
         raise RuntimeError("BusDetails returned no trip data")
 
-    # trips[0] is the (only) bus for direct routes; trips[1] is a SECOND BUS
-    # in a connection trip — not a second floor. Double-decker buses have all
-    # seats in trips[0].seatMap, with the z field (0=ground, 1=upper) used as
-    # the floor discriminator. splitFloors() on the frontend groups by posZ.
-    return parse_seat_map(trips[0].get("seatMap", []))
+    # trips[0] is the (only) bus for direct routes; trips[1] is a SECOND BUS in a
+    # connection trip — not a second floor. Double-decker buses keep all seats in
+    # trips[0].seatMap; decks are split on the EMPTY-row dividers (build_seat_decks),
+    # not the unreliable per-seat z field.
+    seat_map = trips[0].get("seatMap", [])
+    return parse_seat_map(seat_map), build_seat_decks(seat_map)
 
 
 def search_trips(params: RouteParams) -> list[dict]:

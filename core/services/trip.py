@@ -121,8 +121,19 @@ def _parse_bus_details(data: dict, params: RouteParams) -> Optional[dict]:
         "hasSecondFloor": bool(trip.get("hasSecondFloor", False)),
         "preco": str(trip.get("price") or ""),
         "company": trip.get("company", ""),
-        "originId": str(trip.get("originId", params.origin_id)),
-        "destinationId": str(trip.get("destinationId", params.destination_id)),
+        # BusDetails carries the RESOLVED terminal IDs under "origin"/"destination"
+        # (e.g. 21787), NOT the search meta-origin the user typed (e.g. -3, "all
+        # São Paulo"). Mobifacil's LockSeat locks against these terminal IDs
+        # (resolveField(r,"origin","origemId")), so prefer them; fall back to the
+        # *IdDistribusion ids, then the request's values as a last resort.
+        "originId": str(
+            trip.get("origin") or trip.get("originIdDistribusion") or params.origin_id
+        ),
+        "destinationId": str(
+            trip.get("destination")
+            or trip.get("destinationIdDistribusion")
+            or params.destination_id
+        ),
         "group": trip.get("group", "TOTAL_BUS"),
         "raceDate": trip.get("raceDate", params.date),
         "rutaId": str(trip.get("rutaId", "")),
@@ -138,6 +149,11 @@ def _parse_bus_details(data: dict, params: RouteParams) -> Optional[dict]:
         # BusDetails never returns a "seatsWithPrice" field — use seatMap directly.
         "seatsWithPrice": trip.get("seatMap", []),
         "departure": trip.get("departure", dep),
+        # objConnection lives on details (sibling of trip), not on the trip. The
+        # frontend POSTs it as LockSeat's infoConnection field; it is null for
+        # non-connection trips. Captured here so the lock payload can send a
+        # JSON-parseable value (see seat._build_lock_payload).
+        "objConnection": data.get("details", {}).get("objConnection"),
     }
 
 

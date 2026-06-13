@@ -131,6 +131,31 @@ class SeatInfo(BaseModel):
     posZ: float = 0.0   # floor index: 0 = ground, 1 = upper (double-decker)
 
 
+class SeatCell(BaseModel):
+    """One cell of the bus grid, mirroring mobifacil's raw seatMap structure so the
+    frontend can render the coach exactly the way mobifacil does (no guessing).
+
+    ``kind``:
+      - ``seat``     — a bookable seat (use ``number``/``available``/``idoso``)
+      - ``aisle``    — corridor / empty spacer (numero -99 or the central column); no label
+      - ``marker``   — a labelled non-seat landmark (ES = stairs, GE); show ``number``, not clickable
+      - ``bathroom`` — WC
+    """
+
+    kind: str
+    number: str = ""          # raw label as mobifacil shows it ("05", "WC", "ES", "GE"); "" for aisle
+    available: bool = False
+    idoso: bool = False       # priority seat — reservable only via attendance
+
+
+class SeatDeck(BaseModel):
+    """A single deck/floor. ``rows`` are mobifacil's depth-slices (front→back); each
+    row is a fixed-width list of cross-section cells (window→aisle→window)."""
+
+    label: str
+    rows: list[list[SeatCell]]
+
+
 class SeatsResponse(BaseModel):
     origin_id: str
     destination_id: str
@@ -139,6 +164,10 @@ class SeatsResponse(BaseModel):
     total: int
     available: int
     seats: list[SeatInfo]
+    # Full grid mirroring mobifacil's render (decks → rows → cells). Lets the
+    # frontend draw corridors, landmarks and floors exactly; ``seats`` above stays
+    # the flat list used for counts. Empty when the provider returns no seatMap.
+    decks: list[SeatDeck] = Field(default_factory=list)
 
 
 class HealthResponse(BaseModel):

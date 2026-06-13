@@ -411,6 +411,18 @@ select{
   @keyframes seatBlink{ 0%,100%{ box-shadow:0 0 10px rgba(255,160,60,.6), inset 0 1px 0 rgba(255,235,200,.5);}
     50%{ box-shadow:0 0 18px rgba(255,170,70,.9), inset 0 1px 0 rgba(255,235,200,.6);} }
 }
+/* ---- corridor / landmark / priority cells (mobifacil-accurate grid) ---- */
+.seat.aisle{ background:none; border:none; box-shadow:none; cursor:default; pointer-events:none; text-shadow:none; }
+.seat.aisle::after, .seat.aisle::before{ display:none; }
+.seat.marker{ background:#0c0905; border:1px dashed var(--etch-lo); color:var(--amber-faint);
+  box-shadow:none; cursor:default; text-shadow:none; letter-spacing:.04em; }
+.seat.marker::after{ display:none; }
+.seat.bathroom{ color:#8fa6bd; border-color:#2b3a47; }   /* WC */
+/* priority (idoso) seat — reservable only via attendance; flagged, not blocked here */
+.seat.priority.avail{ box-shadow:inset 0 0 0 1.5px rgba(120,200,120,.45), inset 0 1px 0 rgba(255,200,140,.15); }
+.seat.priority.avail::before{ content:"\267F"; position:absolute; bottom:1px; right:3px;
+  font-size:8px; color:rgba(150,220,150,.85); text-shadow:none; }
+
 .seatlegend{ display:flex; gap:16px; justify-content:center; flex-wrap:wrap; margin-top:4px;
   font-size:10px; letter-spacing:.1em; text-transform:uppercase; color:var(--amber-faint); }
 .seatlegend span{ display:flex; align-items:center; gap:6px; }

@@ -221,8 +221,21 @@ hand-copying when possible.
 ```jsonc
 { "origin_id": "19058", "destination_id": "21787", "date": "2026-05-28",
   "departure": "00:00", "total": 44, "available": 12,
-  "seats": [ { "number": "01", "available": true } ] }   // note: number/available
+  "seats": [ { "number": "01", "available": true } ],     // flat list — counts + legacy render
+  "decks": [                                              // exact provider grid for rendering
+    { "label": "FLOOR 1",
+      "rows": [                                           // rows = depth-slices (front→back)
+        [ { "kind": "seat", "number": "05", "available": true, "idoso": false },
+          { "kind": "aisle", "number": "", "available": false, "idoso": false },
+          { "kind": "marker", "number": "ES", "available": false, "idoso": false } ] ] } ] }
 ```
+`decks` mirrors the provider's seatMap so the coach renders with the correct
+corridor, landmarks and floors without client-side guessing. Each row is a
+cross-section of up to 5 cells. `kind`: `seat` (bookable; use `number`/
+`available`/`idoso`), `aisle` (corridor/empty — no label), `marker` (labelled
+landmark, e.g. `ES` stairs / `GE`), `bathroom` (`WC`). Decks are split on the
+provider's empty-row dividers (a coach with one deck has a single entry). `seats`
+stays the flat list for `total`/`available` counts; render from `decks` when present.
 
 ### `SearchResponse` / `TripResult` (from `POST /search`)
 ```jsonc
