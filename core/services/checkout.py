@@ -4,6 +4,8 @@ seat is actually locked via URL → page-content → BusDetails re-fetch.
 """
 from __future__ import annotations
 
+import random
+import time
 from typing import Optional
 
 from playwright.sync_api import Page
@@ -11,7 +13,7 @@ from playwright.sync_api import Page
 from ..config import BUS_DETAILS_PATH, CHECKOUT_PATH, settings
 from ..models.schemas import RouteParams
 from ..utils.logger import log
-from .browser import TelemetryWatcher, check_detection, jitter, retry
+from .browser import TelemetryWatcher, check_detection, jitter, retry, stochastic_idle
 
 
 # ─────────────────────────────────────────────────────────────────
@@ -96,6 +98,46 @@ def _confirm_via_api(page: Page, trip: dict, params: RouteParams) -> Optional[bo
                 log.info(f"[step 7] recheck seat '{params.seat}': disponivel={avail}")
                 return not avail
     return None
+
+
+def wait_for_lock_confirmation(page: Page, trip: dict, params: RouteParams) -> bool:
+    """Poll the API every ~10s until the seat shows locked, or cap is reached."""
+    cap = settings.wait_after_lock
+    interval = 10.0
+    start = time.monotonic()
+    attempt = 0
+
+    log.info(f"[step 6] polling for lock confirmation (cap={cap}s, every ~{interval:.0f}s)")
+
+    while True:
+        elapsed = time.monotonic() - start
+        if elapsed >= cap:
+            break
+
+        attempt += 1
+        stochastic_idle(page, f"step-6-idle-{attempt}")
+
+        try:
+            result = _confirm_via_api(page, trip, params)
+        except Exception as exc:
+            log.debug(f"[step 6] poll {attempt}: API error {exc!r}")
+            result = None
+
+        elapsed = time.monotonic() - start
+        if result is True:
+            log.info(f"[step 6] lock confirmed on poll {attempt} ({elapsed:.1f}s elapsed)")
+            return True
+
+        log.debug(f"[step 6] poll {attempt}: not confirmed yet ({elapsed:.1f}s elapsed)")
+
+        remaining = cap - elapsed
+        if remaining <= 0:
+            break
+        time.sleep(min(interval + random.uniform(-1.5, 1.5), remaining))
+
+    elapsed = time.monotonic() - start
+    log.info(f"[step 6] lock poll cap reached ({elapsed:.1f}s) — proceeding to step 7")
+    return False
 
 
 def confirm_seat_locked(page: Page, trip: dict, params: RouteParams) -> bool:

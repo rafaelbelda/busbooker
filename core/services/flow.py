@@ -32,7 +32,7 @@ from .browser import (
     reset_profile,
     stochastic_idle,
 )
-from .checkout import confirm_seat_locked, proceed_to_checkout
+from .checkout import confirm_seat_locked, proceed_to_checkout, wait_for_lock_confirmation
 from .seat import check_seat_availability, lock_seat, parse_seat_map
 from .trip import open_search_page, resolve_trip
 
@@ -131,8 +131,7 @@ def _execute_flow(playwright, params: RouteParams) -> tuple[int, dict | None]:
             return 1, None
 
         proceed_to_checkout(page, telemetry)                   # Step 5
-        log.info(f"[step 6] holding lock for {settings.wait_after_lock}s...")
-        time.sleep(settings.wait_after_lock)                   # Step 6
+        wait_for_lock_confirmation(page, trip, params)         # Step 6
 
         locked = confirm_seat_locked(page, trip, params)       # Step 7
         if locked:
