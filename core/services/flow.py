@@ -33,7 +33,7 @@ from .browser import (
     stochastic_idle,
 )
 from .checkout import confirm_seat_locked, proceed_to_checkout, wait_for_lock_confirmation
-from .seat import check_seat_availability, lock_seat, parse_seat_map
+from .seat import check_seat_availability, lock_seat, parse_seat_map, seat_is_locked
 from .trip import open_search_page, resolve_trip
 
 
@@ -109,7 +109,7 @@ def _stimulate_fingerprint(page: Page, telemetry: TelemetryWatcher) -> None:
         telemetry.wait_for(timeout=15.0)
 
 
-def _execute_flow(playwright, params: RouteParams) -> tuple[int, dict | None]:
+def _execute_flow(playwright, params: RouteParams, is_relock: bool = False) -> tuple[int, dict | None]:
     """Run the 7-step booking flow once. Returns (exit_code, trip_dict | None)."""
     start = time.monotonic()
     ctx = build_context(playwright)
@@ -122,8 +122,11 @@ def _execute_flow(playwright, params: RouteParams) -> tuple[int, dict | None]:
         trip = resolve_trip(page, params)                      # Step 2
 
         if not check_seat_availability(trip["seatMap"], params):  # Step 3
-            log.error(f"[step 3] seat {params.seat} already locked. Increase task interval.")
-            return 1, None
+            if is_relock and seat_is_locked(trip["seatMap"], params):
+                log.info(f"[step 3] seat {params.seat} still locked from previous cycle — proceeding to re-lock")
+            else:
+                log.error(f"[step 3] seat {params.seat} already locked. Increase task interval.")
+                return 1, None
 
         _stimulate_fingerprint(page, telemetry)                # Step 4 (pre)
         if not lock_seat(page, trip, params):                  # Step 4
@@ -160,7 +163,7 @@ def _execute_flow(playwright, params: RouteParams) -> tuple[int, dict | None]:
 # Public synchronous entrypoints
 # ─────────────────────────────────────────────────────────────────
 def run_flow(
-    params: RouteParams, reservation_id: str | None = None
+    params: RouteParams, reservation_id: str | None = None, is_relock: bool = False
 ) -> tuple[int, dict | None]:
     """
     Self-contained flow runner (manages Playwright + profile + error-retry).
@@ -183,12 +186,12 @@ def run_flow(
             reset_profile(settings.user_data_dir)
 
         with sync_playwright() as pw:
-            code, trip = _execute_flow(pw, params)
+            code, trip = _execute_flow(pw, params, is_relock)
             if code == 2:
                 log.warning("[main] flow error — resetting and retrying")
                 reset_profile(settings.user_data_dir)
                 jitter(2000, 4000)
-                code, trip = _execute_flow(pw, params)
+                code, trip = _execute_flow(pw, params, is_relock)
                 if code == 2:
                     log.error("[main] flow error on retry — giving up")
 

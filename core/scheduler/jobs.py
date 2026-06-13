@@ -17,6 +17,7 @@ a time.
 from __future__ import annotations
 
 import asyncio
+import functools
 from datetime import datetime, timezone
 from typing import Optional
 
@@ -84,7 +85,8 @@ async def _relock_job(reservation_id: str) -> None:
     try:
         loop = asyncio.get_running_loop()
         async with FLOW_LOCK:
-            code, _trip = await loop.run_in_executor(None, run_flow, params, reservation_id)
+            _flow = functools.partial(run_flow, params, reservation_id, True)
+            code, _trip = await loop.run_in_executor(None, _flow)
     except Exception as exc:
         # (7) Unexpected error — log with traceback, keep the job.
         log.exception(f"scheduler: re-lock #{n} raised for {reservation_id}: {exc!r}")

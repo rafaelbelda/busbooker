@@ -89,6 +89,21 @@ def parse_seat_map(seat_map: list) -> list[SeatInfo]:
     return seats
 
 
+def seat_is_locked(seat_map: list, params: RouteParams) -> bool:
+    """Return True iff the seat exists, is not an idoso seat, and is currently locked."""
+    target_norm = params.seat.strip().lstrip("0") or "0"
+    for seat in _iter_seats(seat_map):
+        raw = seat.get("numero", -99)
+        if raw == -99 or str(raw) == "-99":
+            continue
+        num_norm = str(raw).strip().lstrip("0") or "0"
+        if num_norm == target_norm or str(raw).strip() == params.seat.strip():
+            if seat.get("idoso"):
+                return False
+            return not bool(seat.get("disponivel", True))
+    return False
+
+
 def check_seat_availability(seat_map: list, params: RouteParams) -> bool:
     target = params.seat
     target_norm = target.strip().lstrip("0") or "0"
