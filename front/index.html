@@ -4,35 +4,24 @@
   <meta charset="UTF-8">
   <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
   <meta name="color-scheme" content="dark">
-  <meta name="theme-color" content="#0b0907">
+  <meta name="theme-color" content="#0d0c0b">
   <title>busbooker</title>
 
-  <!-- Seven/fourteen-segment + console monospace. Graceful monospace fallback if offline. -->
+  <!-- Numeric readouts only: seven/fourteen-segment + segment mono fallback. UI text uses the system stack. -->
   <link rel="preconnect" href="https://fonts.googleapis.com">
   <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
   <link href="https://fonts.googleapis.com/css2?family=Share+Tech+Mono&display=swap" rel="stylesheet">
   <link rel="stylesheet" href="https://cdn.jsdelivr.net/npm/dseg@0.46.0/css/dseg.css">
   <link rel="stylesheet" href="styles.css">
 </head>
-<body class="flicker">
+<body>
   <main class="console" role="main" aria-label="BusBooker reservation console">
-    <span class="rivet tl" aria-hidden="true"></span>
-    <span class="rivet tr" aria-hidden="true"></span>
-    <span class="rivet bl" aria-hidden="true"></span>
-    <span class="rivet br" aria-hidden="true"></span>
 
     <!-- ============ MASTHEAD ============ -->
     <header class="masthead">
-      <div class="brandrow">
-        <div class="wordmark">
-          <h1>BUSBOOKER</h1>
-          <span class="sub">Seat Reservation Computer</span>
-        </div>
-        <div class="serialplate">
-          MODEL <b>AGC-66</b><br>
-          BLOCK <b>II</b> · REV <b>7.0</b><br>
-          UPLINK <b>SP/UTC</b>
-        </div>
+      <div class="wordmark">
+        <h1>busbooker</h1>
+        <span class="sub">Seat Reservation Computer</span>
       </div>
 
       <!-- status lamp bank -->
@@ -41,29 +30,34 @@
         <div class="lamp" data-lamp="sched"><span class="bulb"></span><span class="lbl">Sched</span></div>
         <div class="lamp proc" data-lamp="proc"><span class="bulb"></span><span class="lbl">Proc</span></div>
         <div class="lamp" data-lamp="link"><span class="bulb"></span><span class="lbl">Link</span></div>
-
-        <div class="lamp" style="min-width:auto;margin-left:auto;align-items:flex-end;gap:5px">
-          <div class="readout" style="padding:5px 9px">
-            <span class="seg7 seg-sm" id="uptimeReadout" aria-label="uptime">--:--:--</span>
-          </div>
-          <span class="lbl" style="letter-spacing:.16em">Uptime</span>
+        <div class="uptime">
+          <span class="seg7 seg-sm" id="uptimeReadout" aria-label="uptime">--:--:--</span>
+          <span class="lbl">Uptime</span>
         </div>
-
       </div>
     </header>
 
-    <!-- ============ MODE SELECTOR ============ -->
-    <nav class="modebar" aria-label="mode selector">
-      <button class="modebtn" type="button" data-view="search" aria-pressed="true">Search</button>
-      <button class="modebtn" type="button" data-view="monitor" aria-pressed="false">Monitor</button>
-      <button class="modebtn" type="button" data-view="admin" aria-pressed="false">Admin</button>
+    <!-- ============ TAB BAR ============ -->
+    <nav class="modebar" aria-label="view selector">
+      <button class="modebtn" type="button" data-view="search" aria-pressed="true">
+        <svg class="navico" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.7" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><circle cx="11" cy="11" r="6.5"></circle><line x1="16" y1="16" x2="21" y2="21"></line></svg>
+        <span class="navlbl">Search</span>
+      </button>
+      <button class="modebtn" type="button" data-view="monitor" aria-pressed="false">
+        <svg class="navico" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.7" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><polyline points="2 12 7 12 10 4 14 20 17 12 22 12"></polyline></svg>
+        <span class="navlbl">Monitor</span>
+      </button>
+      <button class="modebtn" type="button" data-view="admin" aria-pressed="false">
+        <svg class="navico" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.7" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><circle cx="12" cy="12" r="3.2"></circle><path d="M12 2.5v2.4M12 19.1v2.4M21.5 12h-2.4M4.9 12H2.5M18.7 5.3l-1.7 1.7M7 17l-1.7 1.7M18.7 18.7L17 17M7 7 5.3 5.3"></path></svg>
+        <span class="navlbl">Admin</span>
+      </button>
     </nav>
 
     <!-- ============ VIEWS ============ -->
     <div class="body">
-      <section class="view active" id="view-search" aria-label="search and reserve"></section>
-      <section class="view" id="view-monitor" aria-label="monitor reservation"></section>
-      <section class="view" id="view-admin" aria-label="admin dashboard"></section>
+      <section class="view active" id="view-search" aria-label="search and reserve" data-screen-label="Search"></section>
+      <section class="view" id="view-monitor" aria-label="monitor reservation" data-screen-label="Monitor"></section>
+      <section class="view" id="view-admin" aria-label="admin dashboard" data-screen-label="Admin"></section>
     </div>
   </main>
 

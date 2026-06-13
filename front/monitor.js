@@ -54,7 +54,7 @@
     const track = el("button", { class: "btn", type: "button", text: "Track" });
     root.append(
       el("div", { class: "section" }, [
-        el("div", { class: "legend" }, [el("span", { class: "idx", text: "01" }), "Reservation lookup"]),
+        el("div", { class: "legend" }, ["Reservation lookup"]),
         el("div", { class: "field" }, [el("label", { for: "monitorId", text: "Reservation ID" }), input]),
         track,
       ]),
@@ -138,7 +138,7 @@
 
     // ---- PRIMARY: status + countdowns ----
     const primary = el("div", { class: "section" }, [
-      el("div", { class: "legend" }, [el("span", { class: "idx", text: "02" }), "Telemetry"]),
+      el("div", { class: "legend" }, ["Telemetry"]),
       el("div", { class: "statusarray", id: "mon-lamps" }),
       el("div", { class: "progline", id: "mon-prog" }),
       el("div", { class: "twocount" }, [
@@ -154,7 +154,7 @@
     // ---- BUS OCCUPANCY ----
     const scanBtn = el("button", { class: "btn verb browser-action", id: "mon-scan", type: "button", text: "Scan bus occupancy" });
     const bus = el("div", { class: "section" }, [
-      el("div", { class: "legend" }, [el("span", { class: "idx", text: "03" }), "Bus occupancy"]),
+      el("div", { class: "legend" }, ["Bus occupancy"]),
       el("p", { class: "note", id: "mon-busnote", text: "Live read of the current seat map for this route. Rescan to refresh." }),
       scanBtn,
       el("div", { id: "mon-busbody", class: "spaced", style: "margin-top:12px" }),
@@ -163,15 +163,14 @@
 
     // ---- LIVE FLOW LOG (real server-side per-reservation log) ----
     const con = el("div", { class: "section" }, [
-      el("div", { class: "legend" }, [el("span", { class: "idx", text: "04" }), "Live flow log"]),
-      el("p", { class: "note", text: "Live server-side log of the actual booking flow for this reservation — steps, seat lock, retries. Updates while it runs and survives a page reload." }),
+      el("div", { class: "legend" }, ["Live flow log"]),
       el("div", { class: "logmeta", id: "mon-logmeta", text: "waiting for log…" }),
       el("pre", { class: "logview", id: "mon-log", tabindex: "0" }),
     ]);
 
     // ---- MANIFEST ----
     const manifest = el("div", { class: "section" }, [
-      el("div", { class: "legend" }, [el("span", { class: "idx", text: "05" }), "Manifest"]),
+      el("div", { class: "legend" }, ["Manifest"]),
       el("div", { class: "readout", id: "mon-manifest" }),
     ]);
 

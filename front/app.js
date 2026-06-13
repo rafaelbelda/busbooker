@@ -470,7 +470,6 @@
       el("div", { class: "field" }, [
         el("label", { for: "searchDate", text: "Date" }),
         dateInput,
-        el("span", { class: "hint", text: "Up to 5 days ahead. For other cities use Direct URL." }),
       ]),
     ]);
 
@@ -478,7 +477,6 @@
       el("div", { class: "field" }, [
         el("label", { for: "searchUrl", text: "Mobifacil passage URL" }),
         urlField,
-        el("span", { class: "hint", text: "Paste the full mobifacil passagem-de-onibus link exactly as copied." }),
       ]),
     ]);
 
@@ -496,7 +494,7 @@
 
     root.append(
       el("div", { class: "section" }, [
-        el("div", { class: "legend" }, [el("span", { class: "idx", text: "01" }), "Traject input"]),
+        el("div", { class: "legend" }, ["Traject input"]),
         el("div", { class: "modetabs" }, [tabCity, tabUrl]),
         cityForm,
         urlForm,
@@ -504,7 +502,7 @@
         el("div", { id: "searchStatus", class: "spaced", style: "margin-top:12px" }),
       ]),
       el("div", { class: "section hidden", id: "resultsSec" }, [
-        el("div", { class: "legend" }, [el("span", { class: "idx", text: "02" }), "Trip register"]),
+        el("div", { class: "legend" }, ["Trip register"]),
         el("div", { id: "tripList", class: "spaced" }),
       ]),
       el("div", { class: "section hidden", id: "seatSec" })
@@ -594,7 +592,7 @@
     if (!t) { sec.classList.add("hidden"); sec.innerHTML = ""; return; }
 
     sec.classList.remove("hidden"); sec.innerHTML = "";
-    sec.appendChild(el("div", { class: "legend" }, [el("span", { class: "idx", text: "03" }), "Seat select"]));
+    sec.appendChild(el("div", { class: "legend" }, ["Seat select"]));
     const backBtn = el("button", { class: "btn verb sm", style: "margin-bottom:12px", text: "← Back to results" });
     backBtn.addEventListener("click", () => {
       sec.classList.add("hidden");
@@ -684,7 +682,6 @@
     reserveBtn.dataset.forceDisabled = state.seat ? "0" : "1";
     reserveSec.append(
       reserveBtn,
-      el("p", { class: "note", text: "Reserve drives a live browser at the provider. Submit is disabled until the call returns,  the endpoint is not idempotent." }),
       el("div", { id: "reserveStatus", class: "spaced", style: "margin-top:12px" })
     );
     reserveBtn.addEventListener("click", doReserve);
@@ -725,10 +722,9 @@
     const go = el("button", { class: "btn", type: "button", text: "Authenticate" });
     const status = el("div", { class: "spaced", style: "margin-top:12px" });
     root.append(el("div", { class: "section" }, [
-      el("div", { class: "legend" }, [el("span", { class: "idx", text: "00" }), "Restricted · basic auth"]),
+      el("div", { class: "legend" }, ["Restricted · basic auth"]),
       el("div", { class: "field" }, [el("label", { for: "adminPw", text: "Username fixed: admin" }), pw]),
       go,
-      el("p", { class: "note", text: "Credentials held in memory for this session only and sent as an Authorization: Basic header. Never stored." }),
       status,
     ]));
     const submit = async () => {
@@ -760,22 +756,21 @@
     const logMeta = el("div", { class: "logmeta", text: "Select a reservation to view its flow log." });
     const logView = el("pre", { class: "logview", id: "logView", tabindex: "0" });
     const logSection = el("div", { class: "section" }, [
-      el("div", { class: "legend" }, [el("span", { class: "idx", text: "04" }), "Flow logs"]),
+      el("div", { class: "legend" }, ["Flow logs"]),
       el("p", { class: "note", text: "Per-reservation flow log (steps, payloads, retries). Newest run at the bottom; pick a reservation or hit Log in the table." }),
       el("div", { class: "btnrow", style: "margin-top:4px" }, [logPick, logRefresh]),
       logMeta, logView,
     ]);
     root.append(
       el("div", { class: "section" }, [
-        el("div", { class: "legend" }, [el("span", { class: "idx", text: "01" }), "Reservation census"]),
+        el("div", { class: "legend" }, ["Reservation census"]),
         statBar, el("div", { class: "btnrow", style: "margin-top:12px" }, [refresh, logout]),
       ]),
-      el("div", { class: "section" }, [el("div", { class: "legend" }, [el("span", { class: "idx", text: "02" }), "Scheduler"]), schedReadout]),
-      el("div", { class: "section" }, [el("div", { class: "legend" }, [el("span", { class: "idx", text: "03" }), "All reservations"]), tableWrap]),
+      el("div", { class: "section" }, [el("div", { class: "legend" }, ["Scheduler"]), schedReadout]),
+      el("div", { class: "section" }, [el("div", { class: "legend" }, ["All reservations"]), tableWrap]),
       logSection,
       el("div", { class: "section" }, [
-        el("div", { class: "legend" }, [el("span", { class: "idx", text: "05" }), "Power"]),
-        el("p", { class: "note", text: "Graceful SIGTERM. Refused with 409 while any reservation is pending or locked. On success the API disconnects within ~1 s." }),
+        el("div", { class: "legend" }, ["Power"]),
         shutdown, opStatus,
       ])
     );
