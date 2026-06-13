@@ -44,9 +44,10 @@ def _confirm_via_content(page: Page, params: RouteParams) -> bool:
     except Exception as exc:  # FIX (bug 2)
         log.debug(f"[step 7] content read failed: {exc!r}")
         return False
+    # "checkout", "finalizar", "pagamento" are present on every checkout page visit
+    # regardless of lock success — they are not confirmation signals.
     indicators = [
         "reserva confirmada", "poltrona reservada", "assento reservado",
-        "checkout", "finalizar", "pagamento",
         f"poltrona {params.seat}", f"assento {params.seat}",
     ]
     for indicator in indicators:
@@ -141,28 +142,22 @@ def wait_for_lock_confirmation(page: Page, trip: dict, params: RouteParams) -> b
 
 
 def confirm_seat_locked(page: Page, trip: dict, params: RouteParams) -> bool:
-    """Confirm the seat is locked via URL, page content, then API recheck."""
+    """Confirm the seat is locked via page content or API recheck."""
     log.info(f"[step 7] confirming seat {params.seat} is locked")
-    current_url = page.url.lower()
 
-    # STRATEGY 1: on checkout → locked.
-    if "checkout" in current_url or "finalizar" in current_url:
-        log.info("[step 7] on checkout page — lock confirmed by URL")
-        return True
-
-    # STRATEGY 2: page content indicators.
+    # STRATEGY 1: page content — specific reservation confirmation phrases only.
+    # (URL "checkout"/"finalizar" check removed: step 5 always navigates there,
+    # so the URL is always present and cannot distinguish a successful lock.)
     if _confirm_via_content(page, params):
         return True
 
-    # STRATEGY 3: API recheck.
+    # STRATEGY 2: API recheck — authoritative; seat shows disponivel=false iff locked.
     try:
         result = _confirm_via_api(page, trip, params)
         if result is not None:
             return result
     except Exception as exc:
-        # FIX (bug 6): original had `except: pass` here, hiding all errors.
         log.debug(f"[step 7] API recheck failed: {exc!r}")
 
-    # FINAL FALLBACK: UI flow completed = assume locked.
-    log.info("[step 7] UI lock flow completed — assuming locked")
-    return True
+    log.warning(f"[step 7] seat {params.seat} — no confirmation strategy succeeded")
+    return False

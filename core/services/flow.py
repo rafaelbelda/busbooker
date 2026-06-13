@@ -133,15 +133,17 @@ def _execute_flow(playwright, params: RouteParams, is_relock: bool = False) -> t
             log.error("[step 4] failed to lock seat")
             return 1, None
 
-        proceed_to_checkout(page, telemetry)                   # Step 5
-        wait_for_lock_confirmation(page, trip, params)         # Step 6
+        proceed_to_checkout(page, telemetry)                        # Step 5
+        step6_ok = wait_for_lock_confirmation(page, trip, params)   # Step 6
 
-        locked = confirm_seat_locked(page, trip, params)       # Step 7
+        locked = confirm_seat_locked(page, trip, params)            # Step 7
         if locked:
-            log.info(f"[result] seat {params.seat} UNAVAILABLE — lock confirmed")
+            log.info(f"[result] seat {params.seat} locked — confirmed")
             return 0, trip
-        if "checkout" in page.url.lower() or "finalizar" in page.url.lower():
-            log.info(f"[result] seat {params.seat} likely locked (checkout reached)")
+        # URL fallback only fires when step 6 already confirmed via API —
+        # being on the checkout page alone is not proof the lock succeeded.
+        if step6_ok and ("checkout" in page.url.lower() or "finalizar" in page.url.lower()):
+            log.info(f"[result] seat {params.seat} locked — step 6 + checkout URL")
             return 0, trip
         log.warning(f"[result] seat {params.seat} lock unconfirmed")
         return 1, None

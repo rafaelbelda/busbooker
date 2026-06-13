@@ -143,13 +143,14 @@ def extract_seat_coordinates(seat_map: list, seat_number: str) -> Optional[Tuple
 
         log.info(f"[seatmap] found seat {seat_number} in data: {json.dumps(seat)[:300]}")
 
-        for x_field in ["posX", "x", "cx", "left", "col"]:
-            for y_field in ["posY", "y", "cy", "top", "row"]:
-                x = seat.get(x_field)
-                y = seat.get(y_field)
-                if x is not None and y is not None:
-                    log.info(f"[seatmap] using coordinates: {x_field}={x}, {y_field}={y}")
-                    return (float(x), float(y))
+        # Pair fields explicitly so posX is never matched with an unrelated "y"
+        # field (e.g. a CSS layout value), which can produce wildly off-screen coords.
+        for x_field, y_field in [("posX", "posY"), ("x", "y"), ("cx", "cy"), ("left", "top"), ("col", "row")]:
+            x = seat.get(x_field)
+            y = seat.get(y_field)
+            if x is not None and y is not None:
+                log.info(f"[seatmap] using coordinates: {x_field}={x}, {y_field}={y}")
+                return (float(x), float(y))
 
         coord = seat.get("coordinate") or seat.get("coord") or seat.get("position")
         if coord and isinstance(coord, str) and "," in coord:
@@ -208,17 +209,29 @@ def find_clickable_seat_in_ui(page: Page, seat_number: str) -> bool:
     target = str(seat_number).strip()
 
     svg_texts = page.locator("svg text, svg tspan")
-    for i in range(svg_texts.count()):
+    svg_count = svg_texts.count()
+    log.debug(f"[step 4] SVG text elements on page: {svg_count}")
+    matched_svg_texts: list[str] = []
+    for i in range(svg_count):
         try:
             text_el = svg_texts.nth(i)
             text = (text_el.text_content() or "").strip()
+            if text:
+                matched_svg_texts.append(repr(text))
             if text == target or text.lstrip("0") == target.lstrip("0"):
                 log.info(f"[seatmap] found SVG text '{text}' matching seat {target}")
-                text_el.locator("..").click(timeout=5000, force=True)
+                parent = text_el.locator("..")
+                try:
+                    parent.scroll_into_view_if_needed(timeout=2000)
+                except Exception:
+                    pass
+                parent.click(timeout=5000, force=True)
                 jitter(500, 1000)
                 return True
         except Exception:  # FIX (bug 2)
             continue
+    if matched_svg_texts:
+        log.debug(f"[step 4] SVG texts sample (target='{target}'): {', '.join(matched_svg_texts[:8])}")
 
     attr_selectors = [
         f"[data-seat='{target}']",
@@ -230,12 +243,17 @@ def find_clickable_seat_in_ui(page: Page, seat_number: str) -> bool:
     ]
     for selector in attr_selectors:
         try:
-            el = page.locator(selector).first
-            if el.count() and el.is_visible(timeout=2000):
-                log.info(f"[seatmap] found seat via selector: {selector}")
-                el.click(timeout=5000, force=True)
-                jitter(500, 1000)
-                return True
+            if page.locator(selector).count() > 0:
+                el = page.locator(selector).first
+                if el.is_visible(timeout=2000):
+                    log.info(f"[seatmap] found seat via selector: {selector}")
+                    try:
+                        el.scroll_into_view_if_needed(timeout=2000)
+                    except Exception:
+                        pass
+                    el.click(timeout=5000, force=True)
+                    jitter(500, 1000)
+                    return True
         except Exception:  # FIX (bug 2)
             continue
 
@@ -246,12 +264,17 @@ def find_clickable_seat_in_ui(page: Page, seat_number: str) -> bool:
             label = el.get_attribute("aria-label") or ""
             if target in label or target.lstrip("0") in label:
                 log.info(f"[seatmap] found seat via aria-label: {label}")
+                try:
+                    el.scroll_into_view_if_needed(timeout=2000)
+                except Exception:
+                    pass
                 el.click(timeout=5000, force=True)
                 jitter(500, 1000)
                 return True
     except Exception:  # FIX (bug 2)
         pass
 
+    log.warning(f"[step 4] DOM/SVG search exhausted — seat '{target}' not found in UI")
     return False
 
 
@@ -265,18 +288,39 @@ def _lock_via_coordinates(page: Page, trip: dict, params: RouteParams) -> bool:
     containers = page.locator("canvas, svg, [class*='busMap'], [class*='seatmap']")
     for i in range(containers.count()):
         try:
-            box = containers.nth(i).bounding_box()
-            if box and box["width"] > 100 and box["height"] > 100:
+            container = containers.nth(i)
+            box = container.bounding_box()
+            if not (box and box["width"] > 100 and box["height"] > 100):
+                continue
+            click_x = box["x"] + coords[0]
+            click_y = box["y"] + coords[1]
+            # Guard: coords from BusDetails are grid indices, not pixel offsets — the
+            # computed position can land completely outside the container. Skip and let
+            # lock_seat_api handle it instead of firing a blind click.
+            if not (box["x"] <= click_x <= box["x"] + box["width"] and
+                    box["y"] <= click_y <= box["y"] + box["height"]):
+                log.warning(
+                    f"[step 4] coord ({click_x:.0f}, {click_y:.0f}) outside container "
+                    f"bounds ({box['x']:.0f},{box['y']:.0f} "
+                    f"+{box['width']:.0f}x{box['height']:.0f}) — skipping"
+                )
+                continue
+            try:
+                container.scroll_into_view_if_needed(timeout=2000)
+                box = container.bounding_box() or box  # refresh after scroll
                 click_x = box["x"] + coords[0]
                 click_y = box["y"] + coords[1]
-                log.info(f"[step 4] clicking at ({click_x:.0f}, {click_y:.0f})")
-                page.mouse.click(click_x, click_y)
-                jitter(500, 1000)
-                _click_proceed_button(page, ["button:has-text('Continuar')",
-                                             "button:has-text('Finalizar compra')"])
-                return True
+            except Exception:
+                pass
+            log.info(f"[step 4] clicking at ({click_x:.0f}, {click_y:.0f})")
+            page.mouse.click(click_x, click_y)
+            jitter(500, 1000)
+            _click_proceed_button(page, ["button:has-text('Continuar')",
+                                         "button:has-text('Finalizar compra')"])
+            return True
         except Exception:  # FIX (bug 2)
             continue
+    log.warning("[step 4] coordinate click: no valid in-bounds container — falling back to API")
     return False
 
 
