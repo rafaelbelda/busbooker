@@ -18,7 +18,7 @@ from __future__ import annotations
 
 import asyncio
 import functools
-from datetime import datetime, timezone
+from datetime import datetime, timedelta, timezone
 from typing import Optional
 
 from apscheduler.jobstores.base import JobLookupError
@@ -130,7 +130,21 @@ async def _relock_job(reservation_id: str) -> None:
             )
             cancel_relock(reservation_id)
             return
-        log.warning(f"scheduler: re-lock #{n} seat {record.seat} unavailable — will retry")
+        retry_in = 5
+        try:
+            scheduler.reschedule_job(
+                _relock_job_id(reservation_id),
+                trigger=IntervalTrigger(
+                    minutes=settings.scheduler_interval,
+                    start_date=datetime.now(timezone.utc) + timedelta(minutes=retry_in),
+                ),
+            )
+            log.warning(
+                f"scheduler: re-lock #{n} seat {record.seat} soft-fail — "
+                f"retrying in {retry_in} min, then every {settings.scheduler_interval} min"
+            )
+        except JobLookupError:
+            log.warning(f"scheduler: re-lock #{n} seat {record.seat} soft-fail — job gone, cannot reschedule")
     else:
         # (6) Hard fail — stop retrying.
         await store.update(
