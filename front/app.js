@@ -314,23 +314,23 @@
     const D = rows.length;                                   // depth-slices → columns
     const C = rows.reduce((m, r) => Math.max(m, r.length), 0); // cross-section → rows
     const aislePx = mini ? 4 : 16;
+    // Draw the cross-section BOTTOM-UP: position 0 (the 2-seat side) sits at the
+    // bottom and the single-seat side on top, matching the coach's real orientation.
+    const csOrder = []; for (let c = C - 1; c >= 0; c--) csOrder.push(c);
     // A cross-section row is the corridor when every depth-slice has aisle/marker there.
-    const rowH = [];
-    for (let c = 0; c < C; c++) {
-      const thin = rows.every((r) => { const x = r[c]; return !x || x.kind === "aisle" || x.kind === "marker"; });
-      rowH.push(thin ? aislePx : cell);
-    }
+    const rowH = csOrder.map((c) =>
+      rows.every((r) => { const x = r[c]; return !x || x.kind === "aisle" || x.kind === "marker"; }) ? aislePx : cell);
     const wrap = el("div", { class: "seatmap-wrap" + (mini ? " mini" : "") });
     const map = el("div", { class: "seatmap" + (mini ? " mini" : "") });
     map.style.gridTemplateColumns = `repeat(${D}, ${cell}px)`;
     map.style.gridTemplateRows = rowH.map((h) => h + "px").join(" ");
     rows.forEach((r, d) => {
-      for (let c = 0; c < C; c++) {
-        const node = deckCell(r[c], o, rowH[c]);
+      csOrder.forEach((c, v) => {
+        const node = deckCell(r[c], o, rowH[v]);
         node.style.gridColumn = d + 1;
-        node.style.gridRow = c + 1;
+        node.style.gridRow = v + 1;
         map.appendChild(node);
-      }
+      });
     });
     wrap.appendChild(map);
     return wrap;
