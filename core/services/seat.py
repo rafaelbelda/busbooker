@@ -133,46 +133,28 @@ def check_seat_availability(seat_map: list, params: RouteParams) -> bool:
 # Coordinate extraction
 # ─────────────────────────────────────────────────────────────────
 def extract_seat_coordinates(seat_map: list, seat_number: str) -> Optional[Tuple[float, float]]:
-    """Extract seat coordinates from seatMap data, trying multiple field names."""
+    """Return (row_index, col_index) of the target seat within the seatMap 2-D array.
+
+    Uses the array structure as the coordinate system — exactly as parse_seat_map does.
+    Any "x"/"y" fields in the raw seat dict are BusDetails metadata, NOT visual positions
+    (parse_seat_map explicitly avoids them for the same reason). The caller scales these
+    grid indices to pixel positions using the container's bounding box.
+    """
     target = str(seat_number).strip()
-
-    for seat in _iter_seats(seat_map):
-        seat_num = str(seat.get("numero", "")).strip()
-        if seat_num != target:
+    target_norm = target.lstrip("0") or "0"
+    for n, row in enumerate(seat_map):
+        if not isinstance(row, list) or len(row) == 0:
             continue
-
-        log.info(f"[seatmap] found seat {seat_number} in data: {json.dumps(seat)[:300]}")
-
-        # Pair fields explicitly so posX is never matched with an unrelated "y"
-        # field (e.g. a CSS layout value), which can produce wildly off-screen coords.
-        for x_field, y_field in [("posX", "posY"), ("x", "y"), ("cx", "cy"), ("left", "top"), ("col", "row")]:
-            x = seat.get(x_field)
-            y = seat.get(y_field)
-            if x is not None and y is not None:
-                log.info(f"[seatmap] using coordinates: {x_field}={x}, {y_field}={y}")
-                return (float(x), float(y))
-
-        coord = seat.get("coordinate") or seat.get("coord") or seat.get("position")
-        if coord and isinstance(coord, str) and "," in coord:
-            parts = coord.split(",")
-            if len(parts) == 2:
-                try:
-                    return (float(parts[0]), float(parts[1]))
-                except (ValueError, TypeError):  # FIX (bug 2): scoped, not bare
-                    pass
-
-        col = seat.get("coluna") or seat.get("column") or seat.get("col")
-        row_idx = seat.get("fileira") or seat.get("row")
-        if col is not None and row_idx is not None:
-            x = float(col) * 40 + 20  # Assume 40px per seat
-            y = float(row_idx) * 40 + 20
-            log.info(f"[seatmap] estimated grid pos: col={col}, row={row_idx} → ({x}, {y})")
-            return (x, y)
-
-        log.warning(f"[seatmap] seat {seat_number} found but no coordinate fields")
-        log.info(f"[seatmap] available fields: {list(seat.keys())}")
-        return None
-
+        for i, seat in enumerate(row):
+            if not isinstance(seat, dict):
+                continue
+            raw = seat.get("numero", -99)
+            if raw in (-99, "-99", None):
+                continue
+            seat_str = str(raw).strip()
+            if seat_str == target or (seat_str.lstrip("0") or "0") == target_norm:
+                log.info(f"[seatmap] found seat {seat_number} at grid [{n}][{i}]: {json.dumps(seat)[:200]}")
+                return (float(n), float(i))
     log.warning(f"[seatmap] seat {seat_number} not found in seatMap")
     return None
 
@@ -282,37 +264,39 @@ def find_clickable_seat_in_ui(page: Page, seat_number: str) -> bool:
 # Step 4 — Lock seat
 # ─────────────────────────────────────────────────────────────────
 def _lock_via_coordinates(page: Page, trip: dict, params: RouteParams) -> bool:
-    coords = extract_seat_coordinates(trip["seatMap"], params.seat)
+    seat_map = trip["seatMap"]
+    coords = extract_seat_coordinates(seat_map, params.seat)
     if not coords:
         return False
+
+    # Compute grid dimensions so we can scale array indices to pixel fractions.
+    # Empty rows (len==0) are floor separators — exclude them from the row count.
+    non_empty_rows = [r for r in seat_map if isinstance(r, list) and len(r) > 0]
+    grid_rows = max(len(non_empty_rows), 1)
+    grid_cols = max((len(r) for r in non_empty_rows), default=1)
+    # coords = (n=outer_row_index, i=inner_col_index); scale to [0,1] fractions
+    # with 0.5-cell offset so we land in the centre of each cell.
+    row_frac = (coords[0] + 0.5) / grid_rows   # vertical: front → back
+    col_frac = (coords[1] + 0.5) / grid_cols   # horizontal: left → right
+
     containers = page.locator("canvas, svg, [class*='busMap'], [class*='seatmap']")
-    for i in range(containers.count()):
+    for idx in range(containers.count()):
         try:
-            container = containers.nth(i)
+            container = containers.nth(idx)
             box = container.bounding_box()
             if not (box and box["width"] > 100 and box["height"] > 100):
                 continue
-            click_x = box["x"] + coords[0]
-            click_y = box["y"] + coords[1]
-            # Guard: coords from BusDetails are grid indices, not pixel offsets — the
-            # computed position can land completely outside the container. Skip and let
-            # lock_seat_api handle it instead of firing a blind click.
-            if not (box["x"] <= click_x <= box["x"] + box["width"] and
-                    box["y"] <= click_y <= box["y"] + box["height"]):
-                log.warning(
-                    f"[step 4] coord ({click_x:.0f}, {click_y:.0f}) outside container "
-                    f"bounds ({box['x']:.0f},{box['y']:.0f} "
-                    f"+{box['width']:.0f}x{box['height']:.0f}) — skipping"
-                )
-                continue
             try:
                 container.scroll_into_view_if_needed(timeout=2000)
-                box = container.bounding_box() or box  # refresh after scroll
-                click_x = box["x"] + coords[0]
-                click_y = box["y"] + coords[1]
+                box = container.bounding_box() or box
             except Exception:
                 pass
-            log.info(f"[step 4] clicking at ({click_x:.0f}, {click_y:.0f})")
+            click_x = box["x"] + col_frac * box["width"]
+            click_y = box["y"] + row_frac * box["height"]
+            log.info(
+                f"[step 4] grid [{coords[0]:.0f}][{coords[1]:.0f}] of "
+                f"{grid_rows}×{grid_cols} → clicking at ({click_x:.0f}, {click_y:.0f})"
+            )
             page.mouse.click(click_x, click_y)
             jitter(500, 1000)
             _click_proceed_button(page, ["button:has-text('Continuar')",
@@ -320,7 +304,7 @@ def _lock_via_coordinates(page: Page, trip: dict, params: RouteParams) -> bool:
             return True
         except Exception:  # FIX (bug 2)
             continue
-    log.warning("[step 4] coordinate click: no valid in-bounds container — falling back to API")
+    log.warning("[step 4] coordinate click: no valid container found — falling back to API")
     return False
 
 

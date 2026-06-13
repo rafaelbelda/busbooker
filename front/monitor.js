@@ -98,6 +98,7 @@
         : (rec.date && rec.departure
             ? new Date(rec.date + "T" + rec.departure + ":00-03:00").getTime()
             : null);
+      M.arrivalMs = rec.arrival_datetime ? new Date(rec.arrival_datetime).getTime() : null;
     } catch (e) {
       stop();
       const body = $("#monitorBody"); if (!body) return;
@@ -115,7 +116,6 @@
       M.relockMs = M.job && M.job.next_run ? new Date(M.job.next_run).getTime() : null;
     } catch (_) { /* read-only, ignore */ }
 
-    M.arrivalMs = rec.arrival_datetime ? new Date(rec.arrival_datetime).getTime() : null;
     if (!first && M.built) {
       // A re-lock just ran → refresh the flow log promptly to show its output.
       if (M.rec.relock_count > M.lastRelock && M.lastRelock >= 0) pollLog();
