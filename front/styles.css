@@ -227,22 +227,24 @@ select{
 /* ============================================================
    BUTTONS
    ============================================================ */
-/* primary CTA — solid amber fill, dark text */
+/* primary CTA — frosted amber glass */
 .btn{
   font-family:var(--ui); font-size:15px; font-weight:600; letter-spacing:.01em;
   min-height:var(--tap); padding:12px 18px; width:100%; cursor:pointer;
-  color:#1c1206;
-  background:var(--amber);
-  border:1px solid rgba(0,0,0,.25);
+  color:rgba(255,238,170,.95);
+  background:rgba(186,104,12,.70);
+  -webkit-backdrop-filter:blur(12px) saturate(1.7);
+  backdrop-filter:blur(12px) saturate(1.7);
+  border:1px solid rgba(240,172,56,.28);
   border-radius:var(--radius);
-  box-shadow:0 1px 0 rgba(255,255,255,.18) inset, 0 6px 18px rgba(232,160,48,.22);
+  box-shadow:0 1px 0 rgba(255,228,140,.16) inset, 0 4px 16px rgba(150,75,8,.22);
   display:flex; align-items:center; justify-content:center; gap:9px;
   touch-action:manipulation; user-select:none; -webkit-user-select:none;
-  transition:transform .07s ease, box-shadow .15s, background .15s, filter .15s;
+  transition:transform .07s ease, box-shadow .15s, background .15s;
 }
-.btn:hover{ background:#f0ab3c; }
-.btn:active{ transform:scale(.97); }
-.btn:disabled{ opacity:.38; box-shadow:none; cursor:not-allowed; filter:none; }
+.btn:hover{ background:rgba(206,120,16,.80); box-shadow:0 1px 0 rgba(255,228,140,.20) inset, 0 6px 20px rgba(150,75,8,.30); }
+.btn:active{ transform:scale(.97); background:rgba(170,90,8,.75); }
+.btn:disabled{ opacity:.38; box-shadow:none; cursor:not-allowed; }
 
 /* secondary / verb — glass */
 .btn.verb{

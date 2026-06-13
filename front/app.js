@@ -65,23 +65,12 @@
     setLamp("proc", on ? "amber" : "off");
   }
 
-  /* ---------- lamps / health ---------- */
+  /* ---------- lamps ---------- */
   function setLamp(name, color) {
     const l = $(`.lamp[data-lamp="${name}"]`);
     if (!l) return;
     l.classList.remove("on-green", "on-amber", "on-red");
     if (color && color !== "off") l.classList.add("on-" + color);
-  }
-  async function pollHealth() {
-    try {
-      const h = await BB.health();
-      setLamp("sys", h.status === "ok" ? "green" : "red");
-      setLamp("sched", h.scheduler_running ? "amber" : "off");
-      $("#uptimeReadout").textContent = fmtUptime(h.uptime_seconds);
-    } catch (e) {
-      setLamp("sys", "red"); setLamp("sched", "off");
-      $("#uptimeReadout").textContent = "------";
-    }
   }
 
   /* ---------- banners ---------- */
@@ -678,6 +667,8 @@
   }
 
   function renderSeatPicker(seatArea, reserveSec) {
+    const prevWrap = seatArea.querySelector(".seatmap-wrap");
+    const savedScroll = prevWrap ? prevWrap.scrollLeft : 0;
     seatArea.innerHTML = "";
     seatArea.appendChild(buildSeatMap(state.seatMap || [], {
       decks: state.decks, selected: state.seat, activeFloor: state.activeFloor,
@@ -691,6 +682,10 @@
       el("span", {}, [el("i", { class: "s" }), "selected"]),
     ]));
     renderReserveControl(reserveSec);
+    if (savedScroll > 0) {
+      const newWrap = seatArea.querySelector(".seatmap-wrap");
+      if (newWrap) newWrap.scrollLeft = savedScroll;
+    }
   }
 
   function renderReserveControl(reserveSec) {
@@ -914,10 +909,7 @@
   }
   function boot() {
     $$(".modebtn").forEach((b) => b.addEventListener("click", () => switchView(b.dataset.view)));
-    setLamp("link", "green");
     switchView("search");
-    pollHealth();
-    setInterval(pollHealth, 20000);
   }
 
   /* shared namespace for monitor.js */

@@ -110,8 +110,20 @@ class _ReservationFilter(logging.Filter):
 
 
 def reservation_log_path(reservation_id: str) -> Path:
-    """Absolute path of a reservation's dedicated log file."""
-    return Path(settings.reservation_log_dir) / f"{reservation_id}.log"
+    """Absolute path of a reservation's dedicated log file.
+
+    Format: ``YYYY-MM-DD-<id>.log`` where the date is when the log was first
+    created. On subsequent calls (relocks) the existing dated file is found via
+    glob so all runs for the same reservation share one file regardless of
+    date rollover.
+    """
+    from datetime import date as _date
+    log_dir = Path(settings.reservation_log_dir)
+    if log_dir.is_dir():
+        existing = sorted(log_dir.glob(f"????-??-??-{reservation_id}.log"))
+        if existing:
+            return existing[-1]
+    return log_dir / f"{_date.today().strftime('%Y-%m-%d')}-{reservation_id}.log"
 
 
 # Reservation ids are short hex/uuid fragments; clients may supply their own.
