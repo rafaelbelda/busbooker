@@ -148,21 +148,21 @@ body{
 .modebtn[aria-pressed="true"]{ color:var(--amber); }
 .modebtn[aria-pressed="true"] .navlbl{ color:var(--amber); }
 
-/* mobile: fixed bottom nav, icon above label */
+/* mobile: sticky pill segmented control at top */
 .modebar{
-  position:fixed; left:0; right:0; bottom:0;
+  position:sticky; top:0; z-index:50;
   flex-direction:row;
-  padding:8px 10px max(8px, env(safe-area-inset-bottom));
-  border-left:0; border-right:0; border-bottom:0;
-  border-radius:0;
+  margin:10px 0 4px; padding:4px;
+  border-radius:999px;
 }
 .modebtn{ flex-direction:column; gap:3px; font-size:11px; }
-.modebtn .navico{ width:24px; height:24px; }
+.modebtn[aria-pressed="true"]{ border-radius:999px; }
+.modebtn .navico{ width:22px; height:22px; }
 
 /* ============================================================
    VIEWS / SECTIONS
    ============================================================ */
-.body{ padding:18px 2px calc(var(--tap) + 22px); }
+.body{ padding:18px 2px 24px; }
 .view{ display:none; flex-direction:column; gap:var(--gap); }
 .view.active{ display:flex; }
 
@@ -321,7 +321,7 @@ select{
 .slamp .t{ font-size:8.5px; letter-spacing:.04em; text-transform:uppercase; color:var(--txt-faint); }
 .slamp.lit{ background:rgba(255,255,255,.05); }
 .slamp.lit .t{ color:var(--txt); }
-.slamp.s-locked.lit  .b{ background:var(--warn); box-shadow:0 0 8px rgba(251,191,36,.6); }
+.slamp.s-locked.lit  .b{ background:var(--ok); box-shadow:0 0 8px rgba(74,222,128,.6); }
 .slamp.s-pending.lit .b{ background:#fff;        box-shadow:0 0 8px rgba(255,255,255,.6); }
 .slamp.s-failed.lit  .b,
 .slamp.s-expired.lit .b{ background:var(--bad);  box-shadow:0 0 8px rgba(248,113,113,.6); }
@@ -447,7 +447,7 @@ table.recs .mono7{ font-family:var(--seg7); color:var(--seg-color); font-size:13
 /* status pills — filled glass */
 .pill{ display:inline-block; font-size:10px; font-weight:600; letter-spacing:.06em; text-transform:uppercase;
   padding:3px 10px; border-radius:999px; border:1px solid transparent; }
-.pill.locked{ color:#ffe6b3; background:var(--warn-glass); border-color:var(--warn-border); }
+.pill.locked{ color:#c8f5d0; background:var(--ok-glass); border-color:var(--ok-border); }
 .pill.pending{ color:var(--txt); background:var(--surface-2); border-color:var(--border-hi); }
 .pill.failed,.pill.expired{ color:#ffcdc6; background:var(--bad-glass); border-color:var(--bad-border); }
 .pill.cancelled{ color:#d4d7da; background:var(--neutral-glass); border-color:rgba(154,160,166,.3); }
@@ -596,7 +596,23 @@ table.recs .mono7{ font-family:var(--seg7); color:var(--seg-color); font-size:13
     border:1px solid var(--border); border-radius:var(--radius);
   }
   .modebtn{ flex:1; flex-direction:row; gap:9px; font-size:13px; padding:10px 14px; }
+  .modebtn[aria-pressed="true"]{ border-radius:10px; }
   .modebtn .navico{ width:18px; height:18px; }
 
   .body{ padding:18px 2px 8px; }
 }
+
+/* ============================================================
+   LOG LEVEL COLORS (logview lines)
+   ============================================================ */
+.logln-warn { color:var(--warn); }
+.logln-err  { color:var(--bad); }
+.logln-debug{ color:var(--txt-faint); }
+
+/* ============================================================
+   COUNTDOWN TIMEBARS
+   ============================================================ */
+.timebar{ height:2px; background:rgba(255,255,255,.08); border-radius:999px; margin-top:8px; overflow:hidden; }
+.timebar-fill{ height:100%; background:var(--ok); border-radius:999px; transition:width .8s linear; min-width:2px; }
+.timebar-fill.warn{ background:var(--warn); }
+.timebar-fill.bad { background:var(--bad); }

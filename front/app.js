@@ -402,30 +402,50 @@
   const freeCount = (seats) => seats.filter((s) => normSeat(s).avail).length;
 
   /* ====================================================================
+     ROUTE HELPERS (city lookup + log formatter)
+     ==================================================================== */
+  const CITIES = [
+    { name: "São Paulo, SP",       id: "-3"    },
+    { name: "Campinas, SP",        id: "19301" },
+    { name: "Ribeirão Preto, SP",  id: "19068" },
+    { name: "Piracicaba, SP",      id: "19212" },
+    { name: "Araraquara, SP",      id: "19052" },
+    { name: "São Carlos, SP",      id: "19058" },
+    { name: "Rio de Janeiro, RJ",  id: "-36"   },
+    { name: "Florianópolis, SC",   id: "-18"   },
+  ];
+  const cityName = (id) => { const c = CITIES.find((x) => x.id === id); return c ? c.name : id; };
+
+  function formatLogContent(raw) {
+    if (!raw) return "";
+    const MONS = ["Jan","Feb","Mar","Apr","May","Jun","Jul","Aug","Sep","Oct","Nov","Dec"];
+    const esc = (s) => s.replace(/&/g,"&amp;").replace(/</g,"&lt;").replace(/>/g,"&gt;");
+    const LVLCLS = { WARNING:"logln-warn", ERROR:"logln-err", DEBUG:"logln-debug" };
+    return raw.split("\n").map((line) => {
+      const m = line.match(/^(\d{4})-(\d{2})-(\d{2}) (\d{2}:\d{2}:\d{2}) \[(\w+)\](?:\s+\S+ — |\s+)(.+)$/);
+      if (!m) return `<span>${esc(line)}</span>`;
+      const [, , mo, day, time, level, rest] = m;
+      const ts = `${day} ${MONS[+mo - 1]} - ${time}`;
+      const cls = LVLCLS[level] || "";
+      const lvl = cls ? `<span class="${cls}">[${level}]</span>` : `[${level}]`;
+      return `<span>${esc(ts)} ${lvl} &gt;&gt; ${esc(rest)}</span>`;
+    }).join("\n");
+  }
+
+  /* ====================================================================
      VIEW: SEARCH → SEAT → RESERVE
      ==================================================================== */
   function renderSearch() {
     const root = $("#view-search");
     root.innerHTML = "";
 
-    const CITIES = [
-      { name: "São Paulo, SP", id: "-3" },
-      { name: "Campinas, SP",       id: "19301" },
-      { name: "Ribeirão Preto, SP", id: "19068" },
-      { name: "Piracicaba, SP",     id: "19212" },
-      { name: "Araraquara, SP",     id: "19052" },
-      { name: "São Carlos, SP",     id: "19058" },
-      { name: "Rio de Janeiro, RJ", id: "-36" },
-      { name: "Florianópolis, SC",  id: "-18" },
-    ];
-
     function dateOffset(days) {
       const d = new Date();
       d.setDate(d.getDate() + days);
       return `${d.getFullYear()}-${pad2(d.getMonth() + 1)}-${pad2(d.getDate())}`;
     }
-    const today = dateOffset(0);
-    const maxDay = dateOffset(5);
+    const today    = dateOffset(0);
+    const tomorrow = dateOffset(1);
 
     const makeOpts = (selectedId) =>
       CITIES.map((c) => {
@@ -437,10 +457,16 @@
     const originSel = el("select", { id: "originSel" }, makeOpts("19052")); // default: Araraquara
     const destSel   = el("select", { id: "destSel"   }, makeOpts("-3"));    // default: São Paulo
 
-    const dateInput = el("input", {
-      type: "date", id: "searchDate",
-      value: today, min: today, max: maxDay,
-    });
+    const hiddenDate = el("input", { type: "hidden", id: "searchDate", value: today });
+    const todayBtn   = el("button", { class: "floortab", type: "button", "aria-pressed": "true",  text: "Today"    });
+    const tomBtn     = el("button", { class: "floortab", type: "button", "aria-pressed": "false", text: "Tomorrow" });
+    const setDay = (d) => {
+      hiddenDate.value = d;
+      todayBtn.setAttribute("aria-pressed", d === today    ? "true" : "false");
+      tomBtn.setAttribute("aria-pressed",   d === tomorrow ? "true" : "false");
+    };
+    todayBtn.addEventListener("click", () => setDay(today));
+    tomBtn.addEventListener("click",   () => setDay(tomorrow));
 
     const swapBtn = el("button", {
       class: "swapbtn", type: "button", "aria-label": "swap origin and destination", text: "⇄",
@@ -468,8 +494,9 @@
         ]),
       ]),
       el("div", { class: "field" }, [
-        el("label", { for: "searchDate", text: "Date" }),
-        dateInput,
+        el("label", { text: "Date" }),
+        el("div", { class: "floortabs" }, [todayBtn, tomBtn]),
+        hiddenDate,
       ]),
     ]);
 
@@ -490,7 +517,7 @@
     tabCity.addEventListener("click", () => switchMode("city"));
     tabUrl.addEventListener("click",  () => switchMode("url"));
 
-    const searchBtn = el("button", { class: "btn", id: "searchBtn", type: "button", text: "Search" });
+    const searchBtn = el("button", { class: "btn", id: "searchBtn", type: "button", text: "Search", style: "margin-top:8px" });
 
     root.append(
       el("div", { class: "section" }, [
@@ -668,16 +695,8 @@
 
   function renderReserveControl(reserveSec) {
     reserveSec.innerHTML = "";
-    reserveSec.append(
-      el("div", { class: "divider" }),
-      el("div", { class: "readout", style: "margin:10px 0" }, [
-        el("div", { class: "kv" }, [
-          el("span", { class: "k", text: "Seat armed" }),
-          el("span", { class: "v seg7", style: "font-size:22px", text: state.seat || "--" }),
-        ]),
-      ])
-    );
-    const reserveBtn = el("button", { class: "btn browser-action", id: "reserveBtn", type: "button" }, "Reserve seat");
+    reserveSec.append(el("div", { class: "divider" }));
+    const reserveBtn = el("button", { class: "btn browser-action", id: "reserveBtn", type: "button", style: "margin-top:16px" }, "Reserve seat");
     reserveBtn.disabled = !state.seat || state.browserBusy;
     reserveBtn.dataset.forceDisabled = state.seat ? "0" : "1";
     reserveSec.append(
@@ -783,7 +802,7 @@
         if (!res.exists || !res.content) {
           logView.textContent = ""; logMeta.textContent = id + " · no log yet (flow hasn't run)"; return;
         }
-        logView.textContent = res.content;
+        logView.innerHTML = formatLogContent(res.content);
         logMeta.textContent = id + " · " + fmtBytes(res.size) + (res.truncated ? " · showing tail" : "");
         logView.scrollTop = logView.scrollHeight;  // jump to the latest line
       } catch (e) {
@@ -821,7 +840,7 @@
         // Populate the log picker (keep the current selection if still present).
         const prev = logPick.value;
         logPick.innerHTML = "";
-        list.forEach((r) => logPick.appendChild(el("option", { value: r.id, text: `${r.id} · ${r.origin_id}→${r.destination_id} · ${r.status}` })));
+        list.forEach((r) => logPick.appendChild(el("option", { value: r.id, text: `${r.id} · ${cityName(r.origin_id)} → ${cityName(r.destination_id)} · ${r.status}` })));
         if (list.length) {
           logPick.value = list.some((r) => r.id === prev) ? prev : list[0].id;
           loadLog(logPick.value);
@@ -869,7 +888,7 @@
       });
       tb.appendChild(el("tr", {}, [
         el("td", { class: "mono7", text: r.id }),
-        el("td", { text: r.origin_id + "→" + r.destination_id }),
+        el("td", { text: cityName(r.origin_id) + " → " + cityName(r.destination_id) }),
         el("td", { class: "mono7", text: r.seat }),
         el("td", { text: r.date + " " + r.departure }),
         el("td", {}, el("span", { class: "pill " + r.status, text: r.status })),
@@ -905,7 +924,7 @@
   window.BBUI = {
     el, $, $$, pad2, banner, errBanner, workingBanner, kv, kvSeg, stat,
     fmtLocal, localTZ, fmtUptime, buildSeatMap, buildMiniMap, gridMap, splitFloors, normSeat, freeCount,
-    setBrowserBusy, saveMonitorId, switchView, state,
+    setBrowserBusy, saveMonitorId, switchView, state, cityName, formatLogContent,
   };
 
   if (document.readyState === "loading") document.addEventListener("DOMContentLoaded", boot);

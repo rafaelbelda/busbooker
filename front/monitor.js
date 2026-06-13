@@ -142,8 +142,16 @@
       el("div", { class: "statusarray", id: "mon-lamps" }),
       el("div", { class: "progline", id: "mon-prog" }),
       el("div", { class: "twocount" }, [
-        el("div", { class: "bigcount" }, [el("div", { class: "lab", text: "Time to departure" }), el("div", { class: "val", id: "mon-dep", text: "--:--:--" })]),
-        el("div", { class: "bigcount sm" }, [el("div", { class: "lab", text: "Next re-lock" }), el("div", { class: "val", id: "mon-relock", text: "--:--" })]),
+        el("div", { class: "bigcount" }, [
+          el("div", { class: "lab", text: "Time to departure" }),
+          el("div", { class: "val", id: "mon-dep", text: "--:--:--" }),
+          el("div", { class: "timebar" }, [el("div", { class: "timebar-fill", id: "mon-dep-bar" })]),
+        ]),
+        el("div", { class: "bigcount sm" }, [
+          el("div", { class: "lab", text: "Next re-lock" }),
+          el("div", { class: "val", id: "mon-relock", text: "--:--" }),
+          el("div", { class: "timebar" }, [el("div", { class: "timebar-fill", id: "mon-relock-bar" })]),
+        ]),
       ]),
       el("div", { class: "readout", style: "margin-top:4px" }, [
         rowSeg("Seat", "mon-seat"), rowSeg("Re-lock count", "mon-rc"),
@@ -219,7 +227,7 @@
       man.innerHTML = "";
       man.append(
         kv("ID", el("span", { class: "v wrap", text: r.id })),
-        kv("Route", el("span", { class: "v", text: r.origin_id + " → " + r.destination_id })),
+        kv("Route", el("span", { class: "v", text: U.cityName(r.origin_id) + " → " + U.cityName(r.destination_id) })),
         kv("Date · dep (SP)", el("span", { class: "v", text: r.date + " · " + r.departure })),
         kv("Departure (local)", el("span", { class: "v", text: r.departure_datetime ? U.fmtLocal(r.departure_datetime) : "— set on lock" })),
         kv("Exit code", el("span", { class: "v", text: r.exit_code == null ? "—" : String(r.exit_code) })),
@@ -250,10 +258,27 @@
         dep.className = "val" + (c.neg ? " bad" : remain < 1800 ? " warn" : "");
       }
     }
+    const depBar = $("#mon-dep-bar");
+    if (depBar && M.depMs && M.rec.created_at) {
+      const createdMs = new Date(M.rec.created_at).getTime();
+      const total = M.depMs - createdMs;
+      const elapsed = Date.now() - createdMs;
+      const pct = total > 0 ? Math.min(100, Math.max(0, (elapsed / total) * 100)) : 0;
+      depBar.style.width = pct + "%";
+      const remain = M.depMs - Date.now();
+      depBar.className = "timebar-fill" + (remain < 0 ? " bad" : remain < 1800000 ? " warn" : "");
+    }
     const rl = $("#mon-relock");
     if (rl) {
       const terminal = M.rec.status === "cancelled" || M.rec.status === "expired";
       rl.textContent = terminal ? "—" : cdShort(M.relockMs);
+    }
+    const rlBar = $("#mon-relock-bar");
+    if (rlBar && M.relockMs && M.sched) {
+      const totalMs = M.sched.interval_minutes * 60000;
+      const remaining = M.relockMs - Date.now();
+      const pct = totalMs > 0 ? Math.min(100, Math.max(0, ((totalMs - remaining) / totalMs) * 100)) : 0;
+      rlBar.style.width = pct + "%";
     }
   }
 
@@ -373,7 +398,7 @@
     }
     // Keep the user's place if they've scrolled up; otherwise follow the tail.
     const nearBottom = pre.scrollHeight - pre.scrollTop - pre.clientHeight < 48;
-    pre.textContent = res.content;
+    pre.innerHTML = U.formatLogContent(res.content);
     if (meta) meta.textContent = (res.size < 1024 ? res.size + " B" : (res.size / 1024).toFixed(1) + " KB")
       + (res.truncated ? " · showing latest" : "") + " · updates every 5s";
     if (nearBottom) pre.scrollTop = pre.scrollHeight;
