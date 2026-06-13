@@ -28,7 +28,6 @@
     const m = Math.floor(s / 60); s -= m * 60;
     return `${pad2(m)}:${pad2(s)}`;
   }
-  const nowClock = () => { const d = new Date(); return `${pad2(d.getHours())}:${pad2(d.getMinutes())}:${pad2(d.getSeconds())}`; };
 
   /* ---------- human-readable progress line ---------- */
   function progressLine(rec) {
@@ -83,6 +82,7 @@
     update();
     M.timers.push(setInterval(() => poll(false), 20000));
     M.timers.push(setInterval(tick, 1000));
+    M.timers.push(setInterval(pollLog, 5000));  // live tail of the server flow log
   }
 
   async function poll(first) {
@@ -115,17 +115,17 @@
     } catch (_) { /* read-only, ignore */ }
 
     if (!first && M.built) {
-      // log re-lock progression
-      if (M.rec.relock_count > M.lastRelock && M.lastRelock >= 0) {
-        appendLog(`RE-LOCK #${M.rec.relock_count} OK · seat ${M.rec.seat} held`, "ok");
-      }
+      // A re-lock just ran → refresh the flow log promptly to show its output.
+      if (M.rec.relock_count > M.lastRelock && M.lastRelock >= 0) pollLog();
       update();
     }
     M.lastRelock = M.rec.relock_count;
 
     if (M.rec.status === "cancelled" || M.rec.status === "expired" || M.rec.is_expired) {
-      // stop the record poll but keep the 1 s ticker for a final readout
+      // stop the record + log polls (the log is now static) but keep the 1 s
+      // ticker for a final readout. One last log fetch captures the closing lines.
       if (M.timers[0]) { clearInterval(M.timers[0]); M.timers[0] = null; }
+      if (M.timers[2]) { clearInterval(M.timers[2]); M.timers[2] = null; pollLog(); }
     }
   }
 
@@ -161,10 +161,12 @@
     ]);
     scanBtn.addEventListener("click", scan);
 
-    // ---- TELETYPE CONSOLE ----
+    // ---- LIVE FLOW LOG (real server-side per-reservation log) ----
     const con = el("div", { class: "section" }, [
-      el("div", { class: "legend" }, [el("span", { class: "idx", text: "04" }), "Event log"]),
-      el("div", { class: "teletype", id: "mon-tty" }),
+      el("div", { class: "legend" }, [el("span", { class: "idx", text: "04" }), "Live flow log"]),
+      el("p", { class: "note", text: "Live server-side log of the actual booking flow for this reservation — steps, seat lock, retries. Updates while it runs and survives a page reload." }),
+      el("div", { class: "logmeta", id: "mon-logmeta", text: "waiting for log…" }),
+      el("pre", { class: "logview", id: "mon-log", tabindex: "0" }),
     ]);
 
     // ---- MANIFEST ----
@@ -183,15 +185,9 @@
 
     body.append(primary, bus, con, manifest, ctrl);
     M.built = true;
-    M.logEl = $("#mon-tty");
-
-    // seed the event log from the record
-    const c = M.rec;
-    appendLog(`RESERVATION ${c.id} ACQUIRED`, "");
-    appendLog(`CREATED · seat ${c.seat} · route ${c.origin_id}→${c.destination_id}`, "");
-    if (c.status === "locked") appendLog(`SEAT LOCKED · exit ${c.exit_code} · cycle armed`, "ok");
-    if (c.relock_count > 0) appendLog(`${c.relock_count} re-lock cycle(s) on record`, "");
-    if (c.status === "failed") appendLog(`LAST ATTEMPT FAILED · ${c.error_msg || "exit " + c.exit_code}`, c.exit_code === 2 ? "bad" : "warn");
+    M.logEl = $("#mon-log");
+    M.logMetaEl = $("#mon-logmeta");
+    pollLog();  // initial fetch; the 5 s timer (started in start()) keeps it live
   }
   const row = (label, id) => el("div", { class: "kv" }, [el("span", { class: "k", text: label }), el("span", { class: "v", id })]);
   const rowSeg = (label, id) => el("div", { class: "kv" }, [el("span", { class: "k", text: label }), el("span", { class: "v seg7", id })]);
@@ -272,7 +268,6 @@
     out.innerHTML = "";
     U.setBrowserBusy(true);
     out.appendChild(banner("proc", "READING SEAT MAP…", "fetching live seat data", true));
-    appendLog("SEAT-MAP SCAN REQUESTED", "");
     try {
       const res = await BB.getSeats({ origin_id: r.origin_id, destination_id: r.destination_id, date: r.date, departure: r.departure });
       // SeatInfo shape: {number, available},  normSeat handles both this and TripSeat.
@@ -282,10 +277,8 @@
       M.history = [res.available];
       out.innerHTML = "";
       renderBus(out);
-      appendLog(`SCAN COMPLETE · ${res.available}/${res.total} seats free`, "ok");
     } catch (e) {
       out.innerHTML = ""; out.appendChild(errBanner(e));
-      appendLog("SCAN FAILED · " + (e.message || "error"), "bad");
     } finally { U.setBrowserBusy(false); }
   }
 
@@ -351,27 +344,39 @@
     const r = M.rec;
     if (!confirm("Cancel reservation " + r.id + "? This stops its re-lock job and forgets the record.")) return;
     btn.disabled = true; statusEl.innerHTML = "";
-    appendLog("CANCEL REQUESTED", "warn");
     try {
       const resp = await BB.deleteReservation(r.id);
       if (M.timers[0]) { clearInterval(M.timers[0]); M.timers[0] = null; }
       statusEl.appendChild(banner("ok", "RESERVATION CANCELLED", (resp && resp.detail) || "re-lock job stopped"));
-      appendLog("RESERVATION CANCELLED · job stopped", "ok");
       if (localStorage.getItem("bb_resv") === r.id) localStorage.removeItem("bb_resv");
       if (M.rec) M.rec.status = "cancelled";
       update();
     } catch (e) {
-      if (e instanceof BB.ApiError && e.status === 404) { statusEl.appendChild(banner("warn", "ALREADY GONE · 404", "record was not on the server")); appendLog("RECORD ALREADY GONE (404)", "warn"); }
+      if (e instanceof BB.ApiError && e.status === 404) statusEl.appendChild(banner("warn", "ALREADY GONE · 404", "record was not on the server"));
       else { btn.disabled = false; statusEl.appendChild(errBanner(e)); }
     }
   }
 
-  /* ---------- teletype ---------- */
-  function appendLog(text, kind) {
-    if (!M || !M.logEl) return;
-    const ln = el("div", { class: "ln " + (kind || "") }, [el("span", { class: "t", text: nowClock() + "  " }), text]);
-    M.logEl.appendChild(ln);
-    while (M.logEl.childElementCount > 80) M.logEl.removeChild(M.logEl.firstChild);
-    M.logEl.scrollTop = M.logEl.scrollHeight;
+  /* ---------- live flow log (real server-side per-reservation log) ---------- */
+  async function pollLog() {
+    if (!M || !M.id || !M.logEl) return;
+    try {
+      const res = await BB.getReservationLog(M.id);
+      renderLog(res);
+    } catch (_) { /* 404 / transient — the record poll already surfaces a gone reservation */ }
+  }
+  function renderLog(res) {
+    const pre = M.logEl, meta = M.logMetaEl;
+    if (!pre) return;
+    if (!res || !res.exists || !res.content) {
+      if (meta) meta.textContent = "no log yet — the booking flow hasn't started";
+      return;
+    }
+    // Keep the user's place if they've scrolled up; otherwise follow the tail.
+    const nearBottom = pre.scrollHeight - pre.scrollTop - pre.clientHeight < 48;
+    pre.textContent = res.content;
+    if (meta) meta.textContent = (res.size < 1024 ? res.size + " B" : (res.size / 1024).toFixed(1) + " KB")
+      + (res.truncated ? " · showing latest" : "") + " · updates every 5s";
+    if (nearBottom) pre.scrollTop = pre.scrollHeight;
   }
 })();

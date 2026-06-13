@@ -754,6 +754,17 @@
     const refresh = el("button", { class: "btn verb sm", type: "button", text: "↻ Refresh" });
     const logout = el("button", { class: "btn verb sm", type: "button", text: "⏏ Sign out" });
     const shutdown = el("button", { class: "btn danger sm", type: "button", text: "⏻ Shutdown server" });
+    // Flow-log viewer elements.
+    const logPick = el("select", { id: "logPick", "aria-label": "reservation" });
+    const logRefresh = el("button", { class: "btn verb sm", type: "button", text: "↻", title: "reload log", style: "flex:0 0 auto;min-width:46px" });
+    const logMeta = el("div", { class: "logmeta", text: "Select a reservation to view its flow log." });
+    const logView = el("pre", { class: "logview", id: "logView", tabindex: "0" });
+    const logSection = el("div", { class: "section" }, [
+      el("div", { class: "legend" }, [el("span", { class: "idx", text: "04" }), "Flow logs"]),
+      el("p", { class: "note", text: "Per-reservation flow log (steps, payloads, retries). Newest run at the bottom; pick a reservation or hit Log in the table." }),
+      el("div", { class: "btnrow", style: "margin-top:4px" }, [logPick, logRefresh]),
+      logMeta, logView,
+    ]);
     root.append(
       el("div", { class: "section" }, [
         el("div", { class: "legend" }, [el("span", { class: "idx", text: "01" }), "Reservation census"]),
@@ -761,12 +772,37 @@
       ]),
       el("div", { class: "section" }, [el("div", { class: "legend" }, [el("span", { class: "idx", text: "02" }), "Scheduler"]), schedReadout]),
       el("div", { class: "section" }, [el("div", { class: "legend" }, [el("span", { class: "idx", text: "03" }), "All reservations"]), tableWrap]),
+      logSection,
       el("div", { class: "section" }, [
-        el("div", { class: "legend" }, [el("span", { class: "idx", text: "04" }), "Power"]),
+        el("div", { class: "legend" }, [el("span", { class: "idx", text: "05" }), "Power"]),
         el("p", { class: "note", text: "Graceful SIGTERM. Refused with 409 while any reservation is pending or locked. On success the API disconnects within ~1 s." }),
         shutdown, opStatus,
       ])
     );
+    const fmtBytes = (n) => (n < 1024 ? n + " B" : (n / 1024).toFixed(1) + " KB");
+    async function loadLog(id) {
+      if (!id) { logView.textContent = ""; logMeta.textContent = "No reservation selected."; return; }
+      logMeta.textContent = id + " · loading…";
+      try {
+        const res = await BB.adminReservationLog(id, auth);
+        if (!res.exists || !res.content) {
+          logView.textContent = ""; logMeta.textContent = id + " · no log yet (flow hasn't run)"; return;
+        }
+        logView.textContent = res.content;
+        logMeta.textContent = id + " · " + fmtBytes(res.size) + (res.truncated ? " · showing tail" : "");
+        logView.scrollTop = logView.scrollHeight;  // jump to the latest line
+      } catch (e) {
+        if (e instanceof BB.ApiError && e.status === 401) { state.adminAuth = null; return renderAdmin(); }
+        logView.textContent = ""; logMeta.textContent = "error: " + e.message;
+      }
+    }
+    function showLog(id) {
+      if ([...logPick.options].some((o) => o.value === id)) logPick.value = id;
+      loadLog(id);
+      logSection.scrollIntoView({ behavior: "smooth", block: "start" });
+    }
+    logPick.addEventListener("change", () => loadLog(logPick.value));
+    logRefresh.addEventListener("click", () => loadLog(logPick.value));
     async function load() {
       statBar.innerHTML = ""; schedReadout.innerHTML = ""; tableWrap.innerHTML = "";
       statBar.appendChild(el("div", { class: "empty", style: "grid-column:1/-1", text: "LOADING…" }));
@@ -786,7 +822,15 @@
           kvSeg("Active re-locks", String(sched.active_relock_count)),
           kv("Jobs (public)", el("span", { class: "v", text: pubSched ? String(pubSched.active_relock_count) : "n/a" }))
         );
-        renderAdminTable(tableWrap, list, auth, load);
+        renderAdminTable(tableWrap, list, auth, load, showLog);
+        // Populate the log picker (keep the current selection if still present).
+        const prev = logPick.value;
+        logPick.innerHTML = "";
+        list.forEach((r) => logPick.appendChild(el("option", { value: r.id, text: `${r.id} · ${r.origin_id}→${r.destination_id} · ${r.status}` })));
+        if (list.length) {
+          logPick.value = list.some((r) => r.id === prev) ? prev : list[0].id;
+          loadLog(logPick.value);
+        } else { logView.textContent = ""; logMeta.textContent = "No reservations on record."; }
       } catch (e) {
         statBar.innerHTML = "";
         if (e instanceof BB.ApiError && e.status === 401) { state.adminAuth = null; return renderAdmin(); }
@@ -810,14 +854,17 @@
     });
     load();
   }
-  function renderAdminTable(wrap, list, auth, reload) {
+  function renderAdminTable(wrap, list, auth, reload, onViewLog) {
     wrap.innerHTML = "";
     if (!list || !list.length) { wrap.appendChild(el("div", { class: "empty", text: "NO RESERVATIONS ON RECORD" })); return; }
     const tbl = el("table", { class: "recs" });
     tbl.appendChild(el("thead", {}, el("tr", {}, ["ID", "Route", "Seat", "Date · Dep", "Status", "Re-lock", ""].map((h) => el("th", { text: h })))));
     const tb = el("tbody");
+    const btnStyle = "min-height:36px;padding:6px 10px;font-size:11px";
     list.forEach((r) => {
-      const cancelBtn = el("button", { class: "btn danger sm", type: "button", text: "Force-cancel", style: "min-height:36px;padding:6px 10px;font-size:11px" });
+      const logBtn = el("button", { class: "btn verb sm", type: "button", text: "Log", style: btnStyle });
+      if (typeof onViewLog === "function") logBtn.addEventListener("click", () => onViewLog(r.id));
+      const cancelBtn = el("button", { class: "btn danger sm", type: "button", text: "Force-cancel", style: btnStyle });
       cancelBtn.disabled = r.status === "cancelled" || r.status === "expired";
       cancelBtn.addEventListener("click", async () => {
         if (!confirm("Force-cancel " + r.id + "? Record is kept and marked cancelled.")) return;
@@ -832,7 +879,7 @@
         el("td", { text: r.date + " " + r.departure }),
         el("td", {}, el("span", { class: "pill " + r.status, text: r.status })),
         el("td", { class: "mono7", text: String(r.relock_count) }),
-        el("td", {}, cancelBtn),
+        el("td", {}, el("div", { class: "btnrow" }, [logBtn, cancelBtn])),
       ]));
     });
     tbl.appendChild(tb);

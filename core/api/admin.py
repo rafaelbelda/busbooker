@@ -13,7 +13,7 @@ import signal
 import time
 from collections import Counter
 
-from fastapi import APIRouter, BackgroundTasks, Depends, HTTPException, Request
+from fastapi import APIRouter, BackgroundTasks, Depends, HTTPException, Query, Request
 from fastapi.responses import JSONResponse
 from fastapi.security import HTTPBasic, HTTPBasicCredentials
 
@@ -21,7 +21,7 @@ from ..config import settings
 from ..models.schemas import AdminStats, ReservationRecord, ReservationStatus
 from ..scheduler.jobs import cancel_relock, scheduler_status
 from ..state import store
-from ..utils.logger import log
+from ..utils.logger import log, read_reservation_log
 from ..utils.net import client_info
 
 _ADMIN_USER = "admin"
@@ -77,6 +77,24 @@ async def admin_get_reservation(reservation_id: str) -> ReservationRecord:
     if record is None:
         raise HTTPException(status_code=404, detail="reservation not found")
     return record
+
+
+@admin_router.get("/reservations/{reservation_id}/log")
+async def admin_reservation_log(
+    reservation_id: str,
+    tail_kb: int = Query(default=256, ge=1, le=4096, description="return at most the last N KB"),
+) -> dict:
+    """Read a reservation's dedicated flow log (``core/logs/reservations/<id>.log``).
+
+    Returns the tail of the file (last ``tail_kb`` KB) so a long re-lock history
+    stays cheap to fetch. ``exists`` is false (still 200, empty content) when the
+    reservation hasn't produced a log yet — e.g. created but the flow hasn't run.
+    Admin sees any reservation's log; the public per-id endpoint is scoped to one.
+    """
+    data = read_reservation_log(reservation_id, tail_kb)
+    if data is None:
+        raise HTTPException(status_code=404, detail="reservation not found")
+    return data
 
 
 @admin_router.delete("/reservations/{reservation_id}", response_model=ReservationRecord)

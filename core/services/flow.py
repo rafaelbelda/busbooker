@@ -23,7 +23,7 @@ from playwright.sync_api import Page, sync_playwright
 
 from ..config import settings
 from ..models.schemas import RouteParams, SeatInfo
-from ..utils.logger import log
+from ..utils.logger import log, reservation_log
 from .browser import (
     TelemetryWatcher,
     _profile_looks_valid,
@@ -160,35 +160,41 @@ def _execute_flow(playwright, params: RouteParams) -> tuple[int, dict | None]:
 # ─────────────────────────────────────────────────────────────────
 # Public synchronous entrypoints
 # ─────────────────────────────────────────────────────────────────
-def run_flow(params: RouteParams) -> tuple[int, dict | None]:
+def run_flow(
+    params: RouteParams, reservation_id: str | None = None
+) -> tuple[int, dict | None]:
     """
     Self-contained flow runner (manages Playwright + profile + error-retry).
     Safe to call inside a thread-pool executor; must NOT run on the event loop.
 
     Returns ``(exit_code, trip_dict | None)`` — the trip dict is present only on
     success (exit 0) so callers can compute the departure datetime.
+
+    When ``reservation_id`` is supplied, every log line this flow emits is also
+    written to a dedicated ``<log dir>/<id>.log`` for easy per-booking tracing.
     """
-    log.info("  BUS BOOKER")
-    log.info(f"  From: {params.origin_id}  To: {params.destination_id}")
-    log.info(f"  Date: {params.date}  |  Time: {params.departure}  |  Seat: {params.seat}")
-    log.info(f"  URL:  {params.search_url}")
+    with reservation_log(reservation_id):
+        log.info("  BUS BOOKER")
+        log.info(f"  From: {params.origin_id}  To: {params.destination_id}")
+        log.info(f"  Date: {params.date}  |  Time: {params.departure}  |  Seat: {params.seat}")
+        log.info(f"  URL:  {params.search_url}")
 
-    if not _profile_looks_valid(settings.user_data_dir):
-        log.warning("[main] profile missing — resetting")
-        reset_profile(settings.user_data_dir)
-
-    with sync_playwright() as pw:
-        code, trip = _execute_flow(pw, params)
-        if code == 2:
-            log.warning("[main] flow error — resetting and retrying")
+        if not _profile_looks_valid(settings.user_data_dir):
+            log.warning("[main] profile missing — resetting")
             reset_profile(settings.user_data_dir)
-            jitter(2000, 4000)
+
+        with sync_playwright() as pw:
             code, trip = _execute_flow(pw, params)
             if code == 2:
-                log.error("[main] flow error on retry — giving up")
+                log.warning("[main] flow error — resetting and retrying")
+                reset_profile(settings.user_data_dir)
+                jitter(2000, 4000)
+                code, trip = _execute_flow(pw, params)
+                if code == 2:
+                    log.error("[main] flow error on retry — giving up")
 
-    log.info(f"[main] exit({code})")
-    return code, trip
+        log.info(f"[main] exit({code})")
+        return code, trip
 
 
 def fetch_seat_map(params: RouteParams) -> tuple[list[SeatInfo], list[dict]]:

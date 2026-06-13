@@ -73,6 +73,9 @@ class Settings(BaseSettings):
     log_file: str = "core/logs/app.log"
     log_max_bytes: int = 5_242_880
     log_backup_count: int = 3
+    # Per-reservation log files (one <id>.log per reservation, appended across
+    # the initial lock and every re-lock) — invaluable for tracing a single booking.
+    reservation_log_dir: str = "core/logs/reservations"
 
 
 # Single shared settings instance imported across the codebase.

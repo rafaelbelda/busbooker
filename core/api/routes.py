@@ -39,7 +39,7 @@ from ..services.flow import (
     search_trips,
 )
 from ..state import FLOW_LOCK, store, uptime_seconds
-from ..utils.logger import log
+from ..utils.logger import log, read_reservation_log
 from ..utils.net import client_info
 from ..utils.ratelimit import browser_guard
 from ..utils.time_utils import compute_departure_datetime
@@ -221,7 +221,7 @@ async def create_reservation(
     loop = asyncio.get_running_loop()
     try:
         async with FLOW_LOCK:  # run_flow is blocking sync Playwright → executor
-            code, trip = await loop.run_in_executor(None, run_flow, params)
+            code, trip = await loop.run_in_executor(None, run_flow, params, record.id)
     except Exception as exc:
         # Full detail to the log; the client gets a generic message (no internals).
         log.exception(f"[/reservations] id={record.id} flow raised: {exc!r}")
@@ -295,6 +295,27 @@ async def get_reservation(reservation_id: str) -> ReservationRecord:
     if record is None:
         raise HTTPException(status_code=404, detail="reservation not found")
     return record
+
+
+@router.get("/reservations/{reservation_id}/log")
+async def get_reservation_log(
+    reservation_id: str,
+    tail_kb: int = Query(default=256, ge=1, le=4096, description="return at most the last N KB"),
+) -> dict:
+    """Public per-reservation flow log, scoped to a SINGLE id.
+
+    The reservation id is the capability — exactly like ``GET /reservations/{id}``,
+    the holder of an id can read that reservation's log and no other. (Admins use
+    ``/admin/reservations/{id}/log`` to read any.) The log contains only flow steps
+    and payloads — no client IPs (those are logged outside the flow context).
+    404 if the id is unknown; ``exists:false`` while the flow hasn't produced a log.
+    """
+    if await store.get(reservation_id) is None:
+        raise HTTPException(status_code=404, detail="reservation not found")
+    data = read_reservation_log(reservation_id, tail_kb)
+    if data is None:
+        raise HTTPException(status_code=404, detail="reservation not found")
+    return data
 
 
 @router.delete("/reservations/{reservation_id}", response_model=MessageResponse)

@@ -135,6 +135,15 @@
       return r.data;
     },
 
+    /* Public per-reservation flow log — scoped to this id (the id is the capability). */
+    async getReservationLog(id, tailKb) {
+      const q = tailKb ? "?tail_kb=" + tailKb : "";
+      const r = await http("GET", "/reservations/" + encodeURIComponent(id) + "/log" + q, { timeout: READ_TIMEOUT });
+      if (r.status === 404) throw new ApiError(404, "reservation not found");
+      if (r.status !== 200) throw new ApiError(r.status, parseDetail(r.data, "log fetch failed"));
+      return r.data;
+    },
+
     async deleteReservation(id) {
       const r = await http("DELETE", "/reservations/" + encodeURIComponent(id), { timeout: READ_TIMEOUT });
       if (r.status === 404) throw new ApiError(404, "already gone");
@@ -151,6 +160,15 @@
     async adminStats(auth)        { return adminGet("/admin/stats", auth); },
     async adminReservations(auth) { return adminGet("/admin/reservations", auth); },
     async adminScheduler(auth)    { return adminGet("/admin/scheduler", auth); },
+
+    async adminReservationLog(id, auth, tailKb) {
+      const q = tailKb ? "?tail_kb=" + tailKb : "";
+      const r = await http("GET", "/admin/reservations/" + encodeURIComponent(id) + "/log" + q, { auth, timeout: READ_TIMEOUT });
+      if (r.status === 401) throw new ApiError(401, parseDetail(r.data, "invalid credentials"));
+      if (r.status === 404) throw new ApiError(404, "no log for this reservation");
+      if (r.status !== 200) throw new ApiError(r.status, parseDetail(r.data, "log fetch failed"));
+      return r.data;
+    },
 
     async adminDelete(id, auth) {
       const r = await http("DELETE", "/admin/reservations/" + encodeURIComponent(id), { auth, timeout: READ_TIMEOUT });
