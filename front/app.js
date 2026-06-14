@@ -446,16 +446,18 @@
     const originSel = el("select", { id: "originSel" }, makeOpts("19052")); // default: Araraquara
     const destSel   = el("select", { id: "destSel"   }, makeOpts("-3"));    // default: São Paulo
 
-    const hiddenDate = el("input", { type: "hidden", id: "searchDate", value: today });
-    const todayBtn   = el("button", { class: "floortab", type: "button", "aria-pressed": "true",  text: "Today"    });
-    const tomBtn     = el("button", { class: "floortab", type: "button", "aria-pressed": "false", text: "Tomorrow" });
-    const setDay = (d) => {
-      hiddenDate.value = d;
-      todayBtn.setAttribute("aria-pressed", d === today    ? "true" : "false");
-      tomBtn.setAttribute("aria-pressed",   d === tomorrow ? "true" : "false");
+    // Compact picker: a real date field (any future date) with Today/Tomorrow quick-picks.
+    const dateInput = el("input", { type: "date", id: "searchDate", value: today, min: today });
+    const todayChip = el("button", { class: "chip", type: "button", "aria-pressed": "true",  text: "Today"    });
+    const tomChip   = el("button", { class: "chip", type: "button", "aria-pressed": "false", text: "Tomorrow" });
+    const syncChips = () => {
+      const d = dateInput.value;
+      todayChip.setAttribute("aria-pressed", d === today    ? "true" : "false");
+      tomChip.setAttribute("aria-pressed",   d === tomorrow ? "true" : "false");
     };
-    todayBtn.addEventListener("click", () => setDay(today));
-    tomBtn.addEventListener("click",   () => setDay(tomorrow));
+    todayChip.addEventListener("click", () => { dateInput.value = today;    syncChips(); });
+    tomChip.addEventListener("click",   () => { dateInput.value = tomorrow; syncChips(); });
+    dateInput.addEventListener("change", syncChips);
 
     const swapBtn = el("button", {
       class: "swapbtn", type: "button", "aria-label": "swap origin and destination", text: "⇄",
@@ -471,8 +473,8 @@
       placeholder: "https://mobifacil.com.br/passagem-de-onibus/…?origin=…&destination=…&date=dd-mm-yyyy…",
     });
 
-    const tabCity = el("button", { class: "modetab", type: "button", "aria-pressed": "true",  text: "City Select" });
-    const tabUrl  = el("button", { class: "modetab", type: "button", "aria-pressed": "false", text: "Direct URL" });
+    const tabCity = el("button", { class: "segbtn", type: "button", "aria-pressed": "true",  text: "City select" });
+    const tabUrl  = el("button", { class: "segbtn", type: "button", "aria-pressed": "false", text: "Direct URL" });
 
     const cityForm = el("div", { id: "cityForm" }, [
       el("div", { class: "field" }, [
@@ -483,9 +485,11 @@
         ]),
       ]),
       el("div", { class: "field" }, [
-        el("label", { text: "Date" }),
-        el("div", { class: "floortabs" }, [todayBtn, tomBtn]),
-        hiddenDate,
+        el("label", { for: "searchDate", text: "Date" }),
+        el("div", { class: "daterow" }, [
+          dateInput,
+          el("div", { class: "chiprow" }, [todayChip, tomChip]),
+        ]),
       ]),
     ]);
 
@@ -506,12 +510,12 @@
     tabCity.addEventListener("click", () => switchMode("city"));
     tabUrl.addEventListener("click",  () => switchMode("url"));
 
-    const searchBtn = el("button", { class: "btn", id: "searchBtn", type: "button", text: "Search", style: "margin-top:8px" });
+    const searchBtn = el("button", { class: "btn", id: "searchBtn", type: "button", text: "Search", style: "margin-top:20px" });
 
     root.append(
-      el("div", { class: "section" }, [
+      el("div", { class: "section searchform" }, [
         el("div", { class: "legend" }, ["Traject input"]),
-        el("div", { class: "modetabs" }, [tabCity, tabUrl]),
+        el("div", { class: "segctl", role: "group", "aria-label": "input mode" }, [tabCity, tabUrl]),
         cityForm,
         urlForm,
         searchBtn,

@@ -543,18 +543,42 @@ table.recs .mono7{ font-family:var(--seg7); color:var(--seg-color); font-size:13
 .teletype .ln::before{ content:"› "; color:var(--txt-faint); }
 
 /* ============================================================
-   SEARCH MODE TOGGLE + CITY SELECTOR
+   SEARCH FORM — hierarchy: amber is reserved for the Search CTA only.
+   Mode switch reads as a secondary segmented control; date uses a
+   compact picker with quick-pick chips.
    ============================================================ */
-.modetabs{ display:flex; gap:8px; margin-bottom:14px; }
-.modetab{
-  flex:1; min-height:42px; font-family:var(--ui); font-size:12px; font-weight:600; letter-spacing:.02em;
-  cursor:pointer; color:var(--txt-dim); background:var(--surface-2);
-  -webkit-backdrop-filter:blur(12px) saturate(1.4); backdrop-filter:blur(12px) saturate(1.4);
-  border:1px solid var(--border-hi); border-radius:999px;
+/* group spacing so the eye flows: mode → cities → date → Search */
+.searchform .segctl{ margin-bottom:20px; }
+
+/* input-mode switch — subtle segmented control (not a primary action) */
+.segctl{
+  display:inline-flex; gap:2px; padding:3px; margin-bottom:14px;
+  background:transparent; border:1px solid var(--border); border-radius:10px;
+}
+.segbtn{
+  min-height:32px; padding:5px 16px; cursor:pointer;
+  font-family:var(--ui); font-size:12px; font-weight:500; letter-spacing:.01em;
+  color:var(--txt-dim); background:transparent; border:0; border-radius:7px;
   touch-action:manipulation; user-select:none; -webkit-user-select:none;
   transition:color .15s, background .15s;
 }
-.modetab[aria-pressed="true"]{ color:#1c1206; background:var(--amber); border-color:rgba(0,0,0,.25); }
+.segbtn:hover{ color:var(--txt); }
+.segbtn[aria-pressed="true"]{ color:var(--txt); background:var(--surface-2); }
+
+/* compact date row: field + Today/Tomorrow quick-pick chips */
+.daterow{ display:flex; gap:10px; align-items:center; flex-wrap:wrap; }
+.daterow #searchDate{ flex:1; min-width:150px; width:auto; }
+.chiprow{ display:flex; gap:6px; flex:none; }
+.chip{
+  min-height:36px; padding:6px 14px; cursor:pointer;
+  font-family:var(--ui); font-size:12px; font-weight:500; letter-spacing:.01em;
+  color:var(--txt-dim); background:transparent;
+  border:1px solid var(--border-hi); border-radius:999px;
+  touch-action:manipulation; user-select:none; -webkit-user-select:none;
+  transition:color .15s, background .15s, border-color .15s;
+}
+.chip:hover{ color:var(--txt); background:rgba(255,255,255,.05); }
+.chip[aria-pressed="true"]{ color:var(--txt); background:var(--surface-2); border-color:var(--border-hi); }
 
 .cityrow{ display:flex; gap:10px; align-items:flex-end; }
 .citycol{ display:flex; flex-direction:column; gap:6px; flex:1; min-width:0; }
