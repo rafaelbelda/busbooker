@@ -21,7 +21,12 @@ from .browser import (
     retry,
     stochastic_idle,
 )
-from .htmlsearch import _parse_lsservicos, build_bus_details_url, filter_trips_by_date
+from .htmlsearch import (
+    _HTML_HEADERS,
+    _parse_lsservicos,
+    build_bus_details_url,
+    filter_trips_by_date,
+)
 
 
 # ─────────────────────────────────────────────────────────────────
@@ -279,17 +284,26 @@ def _dep_hour(ls_trip: dict) -> str:
 def _resolve_trip_direct(page: Page, params: RouteParams) -> Optional[dict]:
     """Resolve the trip WITHOUT a UI click or XHR-intercept race.
 
-    Parses lsServicos from the already-loaded search-page HTML, builds the
-    BusDetails URL exactly as a card click would, and fetches it through the
-    browser's OWN request context — so cookies are shared with the eventual
-    LockSeat POST. This is the same deterministic path ``/seats`` uses; it
-    replaces the flaky "intercept not captured" failure mode. Returns the trip
-    dict, or ``None`` to let the caller fall back to the intercept method.
+    Parses lsServicos from the RAW server HTML, builds the BusDetails URL exactly
+    as a card click would, and fetches it through the browser's OWN request
+    context — so cookies are shared with the eventual LockSeat POST. This is the
+    same deterministic path ``/seats`` uses; it replaces the flaky "intercept not
+    captured" failure mode. Returns the trip dict, or ``None`` to let the caller
+    fall back to the intercept method.
+
+    NOTE: we re-GET the search URL rather than reading ``page.content()`` — by the
+    time the page is loaded, Vue has mounted and CONSUMED the ``:data="..."``
+    attribute that carries lsServicos, so the rendered DOM no longer contains it.
+    The raw HTTP response still does (it is server-rendered).
     """
     try:
-        html = page.content()
+        html_resp = page.request.get(params.search_url, headers=_HTML_HEADERS, timeout=25_000)
+        if html_resp.status != 200:
+            log.warning(f"[step 2] direct: search HTML HTTP {html_resp.status}")
+            return None
+        html = html_resp.text()
     except Exception as exc:
-        log.warning(f"[step 2] direct: could not read page HTML: {exc!r}")
+        log.warning(f"[step 2] direct: search HTML fetch failed: {exc!r}")
         return None
 
     trips = _parse_lsservicos(html)
