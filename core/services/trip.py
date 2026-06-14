@@ -11,7 +11,7 @@ from typing import Callable, Optional, Tuple
 
 from playwright.sync_api import Page, Response
 
-from ..config import BUS_DETAILS_PATH
+from ..config import BUS_DETAILS_PATH, settings
 from ..models.schemas import RouteParams
 from ..utils.logger import log
 from .browser import (
@@ -21,6 +21,7 @@ from .browser import (
     retry,
     stochastic_idle,
 )
+from .htmlsearch import _parse_lsservicos, build_bus_details_url, filter_trips_by_date
 
 
 # ─────────────────────────────────────────────────────────────────
@@ -269,8 +270,88 @@ def _navigate_via_url(page: Page, params: RouteParams) -> None:
     stochastic_idle(page, "post_bus_details_nav")
 
 
+def _dep_hour(ls_trip: dict) -> str:
+    """Departure HH:MM from an lsServicos entry's ``saida`` ("DD/MM/YYYY HH:MM")."""
+    saida = ls_trip.get("saida", "")
+    return saida.rsplit(" ", 1)[-1] if " " in saida else saida
+
+
+def _resolve_trip_direct(page: Page, params: RouteParams) -> Optional[dict]:
+    """Resolve the trip WITHOUT a UI click or XHR-intercept race.
+
+    Parses lsServicos from the already-loaded search-page HTML, builds the
+    BusDetails URL exactly as a card click would, and fetches it through the
+    browser's OWN request context — so cookies are shared with the eventual
+    LockSeat POST. This is the same deterministic path ``/seats`` uses; it
+    replaces the flaky "intercept not captured" failure mode. Returns the trip
+    dict, or ``None`` to let the caller fall back to the intercept method.
+    """
+    try:
+        html = page.content()
+    except Exception as exc:
+        log.warning(f"[step 2] direct: could not read page HTML: {exc!r}")
+        return None
+
+    trips = _parse_lsservicos(html)
+    if not trips:
+        log.warning("[step 2] direct: no lsServicos in page HTML")
+        return None
+
+    trips = filter_trips_by_date(trips, params.date)
+    if not trips:
+        log.warning("[step 2] direct: no trips for requested date in HTML")
+        return None
+
+    matching = next((t for t in trips if _dep_hour(t) == params.departure), None)
+    if not matching:
+        available = [_dep_hour(t) for t in trips]
+        log.warning(f"[step 2] direct: departure {params.departure} not in HTML trips {available}")
+        return None
+
+    url = build_bus_details_url(matching, params.date)
+    log.info("[step 2] direct: fetching BusDetails (no UI click)")
+    try:
+        resp = page.request.get(
+            url,
+            headers={
+                "Referer": settings.base_url + "/passagem-de-onibus/",
+                "X-Requested-With": "XMLHttpRequest",
+            },
+            timeout=20_000,
+        )
+        if resp.status != 200:
+            log.warning(f"[step 2] direct: BusDetails HTTP {resp.status}")
+            return None
+        data = resp.json()
+    except Exception as exc:
+        log.warning(f"[step 2] direct: BusDetails fetch failed: {exc!r}")
+        return None
+
+    result = _parse_bus_details(data, params)
+    if not result:
+        log.warning("[step 2] direct: BusDetails parse returned no usable trip")
+        return None
+
+    log.info(f"[step 2] trip resolved via direct BusDetails — serviceId={result['serviceId']}")
+    debug_seat_map_structure(result["seatMap"])
+    return result
+
+
 def resolve_trip(page: Page, params: RouteParams) -> dict:
-    log.info("[step 2] resolving trip (intercept-only)")
+    """Resolve the target trip dict. Direct HTTP path first (deterministic),
+    XHR-intercept click path as a fallback."""
+    log.info("[step 2] resolving trip")
+
+    direct = _resolve_trip_direct(page, params)
+    if direct:
+        return direct
+
+    log.warning("[step 2] direct resolution failed — falling back to XHR intercept")
+    return _resolve_trip_via_intercept(page, params)
+
+
+def _resolve_trip_via_intercept(page: Page, params: RouteParams) -> dict:
+    log.info("[step 2] resolving trip via XHR intercept (fallback)")
 
     for attempt, label in enumerate(["first attempt", "reload retry"]):
         if attempt == 1:
