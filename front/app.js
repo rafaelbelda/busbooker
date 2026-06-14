@@ -450,13 +450,23 @@
     const hiddenDate = el("input", { type: "hidden", id: "searchDate", value: today });
     const todayChip  = el("button", { class: "chip", type: "button", "aria-pressed": "true",  text: "Today"    });
     const tomChip    = el("button", { class: "chip", type: "button", "aria-pressed": "false", text: "Tomorrow" });
+    const dateEcho   = el("span", { class: "dateecho" });
+    // "2026-06-15" → "15 Jun 2026, Monday"
+    const prettyDate = (ymd) => {
+      const d = new Date(ymd + "T12:00:00");
+      const mon = ["Jan","Feb","Mar","Apr","May","Jun","Jul","Aug","Sep","Oct","Nov","Dec"][d.getMonth()];
+      const wd  = ["Sunday","Monday","Tuesday","Wednesday","Thursday","Friday","Saturday"][d.getDay()];
+      return `${pad2(d.getDate())} ${mon} ${d.getFullYear()}, ${wd}`;
+    };
     const setDay = (d) => {
       hiddenDate.value = d;
+      dateEcho.textContent = prettyDate(d);
       todayChip.setAttribute("aria-pressed", d === today    ? "true" : "false");
       tomChip.setAttribute("aria-pressed",   d === tomorrow ? "true" : "false");
     };
     todayChip.addEventListener("click", () => setDay(today));
     tomChip.addEventListener("click",   () => setDay(tomorrow));
+    dateEcho.textContent = prettyDate(today);
 
     const swapBtn = el("button", {
       class: "swapbtn", type: "button", "aria-label": "swap origin and destination", text: "⇄",
@@ -485,7 +495,7 @@
       ]),
       el("div", { class: "field" }, [
         el("label", { text: "Date" }),
-        el("div", { class: "chiprow" }, [todayChip, tomChip]),
+        el("div", { class: "chiprow" }, [todayChip, tomChip, dateEcho]),
         hiddenDate,
       ]),
     ]);

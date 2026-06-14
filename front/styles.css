@@ -566,7 +566,8 @@ table.recs .mono7{ font-family:var(--seg7); color:var(--seg-color); font-size:13
 .segbtn[aria-pressed="true"]{ color:var(--txt); background:var(--surface-2); }
 
 /* date quick-picks — two compact chips (only today/tomorrow are bookable) */
-.chiprow{ display:flex; gap:8px; }
+.chiprow{ display:flex; gap:8px; align-items:center; flex-wrap:wrap; }
+.dateecho{ margin-left:8px; font-size:13px; color:var(--txt-dim); letter-spacing:.01em; white-space:nowrap; }
 .chip{
   min-height:40px; padding:8px 22px; cursor:pointer;
   font-family:var(--ui); font-size:12px; font-weight:500; letter-spacing:.01em;
