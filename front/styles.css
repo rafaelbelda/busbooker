@@ -373,6 +373,7 @@ select option:checked{ background:#2a2317; color:var(--amber); }
   border:1px solid var(--border); cursor:pointer; position:relative;
   background:rgba(255,255,255,.04);
   touch-action:manipulation; user-select:none; -webkit-user-select:none;
+  -webkit-tap-highlight-color:transparent;   /* kill the dark tap overlay that hid the amber fill on mobile */
   text-shadow:0 0 6px rgba(255,184,74,.30); transition:box-shadow .12s, transform .06s, background .12s;
 }
 .seat.avail{ border-color:rgba(232,160,48,.40); }
