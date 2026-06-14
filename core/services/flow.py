@@ -32,7 +32,7 @@ from .browser import (
     reset_profile,
     stochastic_idle,
 )
-from .checkout import confirm_seat_locked, proceed_to_checkout, wait_for_lock_confirmation
+from .checkout import corroborate_lock, proceed_to_checkout
 from .seat import check_seat_availability, lock_seat, parse_seat_map, seat_is_locked
 from .trip import open_search_page, resolve_trip
 
@@ -129,24 +129,34 @@ def _execute_flow(playwright, params: RouteParams, is_relock: bool = False) -> t
                 return 1, None
 
         _stimulate_fingerprint(page, telemetry)                # Step 4 (pre)
-        if not lock_seat(page, trip, params):                  # Step 4
+        seat_uuid = lock_seat(page, trip, params)              # Step 4
+        if not seat_uuid:
+            # None → LockSeat declined (seat taken / not lockable): soft fail,
+            # scheduler retries on its interval.
             log.error("[step 4] failed to lock seat")
             return 1, None
+        log.info(f"[step 4] seat {params.seat} locked — seatUUID={seat_uuid}")
 
-        proceed_to_checkout(page, telemetry)                        # Step 5
-        step6_ok = wait_for_lock_confirmation(page, trip, params)   # Step 6
+        # Step 5 — best-effort: visit checkout to commit the hold the same way the
+        # browser flow does. Non-fatal: the LockSeat POST already holds the seat and
+        # its seatUUID is authoritative proof, so a checkout hiccup must never turn a
+        # real lock into a failure.
+        try:
+            proceed_to_checkout(page, telemetry)
+        except Exception as exc:  # FIX (bug 2)
+            log.warning(f"[step 5] checkout navigation skipped (non-fatal): {exc!r}")
 
-        locked = confirm_seat_locked(page, trip, params)            # Step 7
-        if locked:
-            log.info(f"[result] seat {params.seat} locked — confirmed")
-            return 0, trip
-        # URL fallback only fires when step 6 already confirmed via API —
-        # being on the checkout page alone is not proof the lock succeeded.
-        if step6_ok and ("checkout" in page.url.lower() or "finalizar" in page.url.lower()):
-            log.info(f"[result] seat {params.seat} locked — step 6 + checkout URL")
-            return 0, trip
-        log.warning(f"[result] seat {params.seat} lock unconfirmed")
-        return 1, None
+        # Step 6 — corroboration only, never a veto. mobifacil's seat map is cached
+        # and lags a fresh hold, so a "still available" reading does NOT undo the
+        # seatUUID. (This is exactly the false-negative the old 60s poll produced.)
+        corroborated = corroborate_lock(page, trip, params)
+        if corroborated is True:
+            log.info("[step 6] BusDetails corroborates the lock")
+        else:
+            log.info("[step 6] corroboration inconclusive (cache lag) — trusting seatUUID")
+
+        log.info(f"[result] seat {params.seat} locked — confirmed via seatUUID")
+        return 0, trip
 
     except RuntimeError as exc:
         log.error(f"[flow error] {exc}")

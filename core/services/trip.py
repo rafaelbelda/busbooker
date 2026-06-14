@@ -113,9 +113,13 @@ def _parse_bus_details(data: dict, params: RouteParams) -> Optional[dict]:
         "empresaId": empresa_id,
         "departureHour": dep,
         "arrivalHour": arr_hour,
-        # arrival is time-only (used in lock payload); BusDetails "arrival" is a
-        # full datetime string which the LockSeat API does not expect.
-        "arrival": arr_hour,
+        # LockSeat's createDateObjects parses `arrival` and `departure` as FULL
+        # datetimes ("dd/mm/yyyy HH:MM:SS"). BusDetails already provides arrival in
+        # that form (same source/format as `departure` below) — use it. The old code
+        # overrode it with the bare "HH:MM" arrivalHour, which the server rejects:
+        # "createDateObjects ... The specified timeString could not be parsed". Fall
+        # back to arrivalHour only if BusDetails omits the full value.
+        "arrival": str(trip.get("arrival") or arr_hour),
         "service": f"{sid}-{params.date}T{params.departure}-{fare_code}",
         "seatMap": trip.get("seatMap", []),
         "hasSecondFloor": bool(trip.get("hasSecondFloor", False)),

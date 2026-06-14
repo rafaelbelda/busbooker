@@ -1,11 +1,16 @@
 """
-Steps 5-7 of the flow: proceed to checkout (holding the lock) and confirm the
-seat is actually locked via URL → page-content → BusDetails re-fetch.
+Steps 5-6 of the flow: best-effort checkout visit (to commit the hold the way
+the browser flow does) and a non-vetoing lock corroboration via page-content /
+BusDetails re-fetch.
+
+The authoritative confirmation is the LockSeat ``seatUUID`` returned by
+``seat.lock_seat`` — these helpers only *corroborate* it. mobifacil's seat map
+is a cached endpoint that lags a fresh hold, so a "still available" reading here
+must NEVER override a valid seatUUID (that flip-flop was the old false-negative
+that polled for 60s and then failed real locks).
 """
 from __future__ import annotations
 
-import random
-import time
 from typing import Optional
 
 from playwright.sync_api import Page
@@ -13,11 +18,11 @@ from playwright.sync_api import Page
 from ..config import BUS_DETAILS_PATH, CHECKOUT_PATH, settings
 from ..models.schemas import RouteParams
 from ..utils.logger import log
-from .browser import TelemetryWatcher, check_detection, jitter, retry, stochastic_idle
+from .browser import TelemetryWatcher, check_detection, jitter, retry
 
 
 # ─────────────────────────────────────────────────────────────────
-# Step 5 — Checkout
+# Step 5 — Checkout (best-effort hold commit)
 # ─────────────────────────────────────────────────────────────────
 def proceed_to_checkout(page: Page, telemetry: TelemetryWatcher) -> None:
     log.info("[step 5] navigating to Checkout-Begin")
@@ -32,7 +37,9 @@ def proceed_to_checkout(page: Page, telemetry: TelemetryWatcher) -> None:
         check_detection(page, "checkout")
 
     retry(_go, "checkout")
-    telemetry.wait_for(timeout=20.0)
+    # Short, best-effort wait: the seat is already held by the LockSeat POST, so
+    # we don't block the flow (and the global FLOW_LOCK) waiting on telemetry.
+    telemetry.wait_for(timeout=5.0)
 
 
 # ─────────────────────────────────────────────────────────────────
@@ -101,63 +108,23 @@ def _confirm_via_api(page: Page, trip: dict, params: RouteParams) -> Optional[bo
     return None
 
 
-def wait_for_lock_confirmation(page: Page, trip: dict, params: RouteParams) -> bool:
-    """Poll the API every ~10s until the seat shows locked, or cap is reached."""
-    cap = settings.wait_after_lock
-    interval = 10.0
-    start = time.monotonic()
-    attempt = 0
+def corroborate_lock(page: Page, trip: dict, params: RouteParams) -> Optional[bool]:
+    """Best-effort secondary check that the seat reads as locked.
 
-    log.info(f"[step 6] polling for lock confirmation (cap={cap}s, every ~{interval:.0f}s)")
-
-    while True:
-        elapsed = time.monotonic() - start
-        if elapsed >= cap:
-            break
-
-        attempt += 1
-        stochastic_idle(page, f"step-6-idle-{attempt}")
-
-        try:
-            result = _confirm_via_api(page, trip, params)
-        except Exception as exc:
-            log.debug(f"[step 6] poll {attempt}: API error {exc!r}")
-            result = None
-
-        elapsed = time.monotonic() - start
-        if result is True:
-            log.info(f"[step 6] lock confirmed on poll {attempt} ({elapsed:.1f}s elapsed)")
-            return True
-
-        log.debug(f"[step 6] poll {attempt}: not confirmed yet ({elapsed:.1f}s elapsed)")
-
-        remaining = cap - elapsed
-        if remaining <= 0:
-            break
-        time.sleep(min(interval + random.uniform(-1.5, 1.5), remaining))
-
-    elapsed = time.monotonic() - start
-    log.info(f"[step 6] lock poll cap reached ({elapsed:.1f}s) — proceeding to step 7")
-    return False
-
-
-def confirm_seat_locked(page: Page, trip: dict, params: RouteParams) -> bool:
-    """Confirm the seat is locked via page content or API recheck."""
-    log.info(f"[step 7] confirming seat {params.seat} is locked")
+    Returns ``True`` (page/API shows it held), ``False`` (still shows available —
+    almost always cache lag, NOT a real failure), or ``None`` (couldn't tell).
+    This is corroboration only: the caller already holds an authoritative
+    seatUUID and must never let a ``False``/``None`` here veto a real lock.
+    """
+    log.info(f"[step 6] corroborating seat {params.seat} lock (non-vetoing)")
 
     # STRATEGY 1: page content — specific reservation confirmation phrases only.
-    # (URL "checkout"/"finalizar" check removed: step 5 always navigates there,
-    # so the URL is always present and cannot distinguish a successful lock.)
     if _confirm_via_content(page, params):
         return True
 
-    # STRATEGY 2: API recheck — authoritative; seat shows disponivel=false iff locked.
+    # STRATEGY 2: API recheck — seat shows disponivel=false iff the hold is visible.
     try:
-        result = _confirm_via_api(page, trip, params)
-        if result is not None:
-            return result
+        return _confirm_via_api(page, trip, params)
     except Exception as exc:
-        log.debug(f"[step 7] API recheck failed: {exc!r}")
-
-    log.warning(f"[step 7] seat {params.seat} — no confirmation strategy succeeded")
-    return False
+        log.debug(f"[step 6] API recheck failed: {exc!r}")
+        return None

@@ -44,11 +44,6 @@ from playwright.sync_api import Request, Response, sync_playwright
 from core.config import LOCK_SEAT_PATH, settings
 from core.services.browser import build_context, jitter
 from core.services.flow import resolve_route_params
-from core.services.seat import (
-    find_clickable_seat_in_ui,
-    _click_proceed_button,
-    _PROCEED_SELECTORS,
-)
 from core.services.trip import open_search_page, resolve_trip, _navigate_via_url
 from core.services.browser import TelemetryWatcher
 
@@ -167,11 +162,13 @@ def run(origin: str, destination: str, date: str, departure: str,
             jitter(1500, 2500)
 
             # Let mobifacil's own JS fire LockSeat by clicking the seat in the UI.
-            clicked = find_clickable_seat_in_ui(page, seat)
+            # (The app's DOM/SVG seat finder was removed — the map is a <canvas> —
+            # so this helper clicks a VISIBLE seat label directly.)
+            clicked = False
             if not clicked:
                 # Click a VISIBLE seat label (padded or not) and, if needed, its
                 # clickable ancestor — we just need SOME LockSeat to fire.
-                print("[capture] DOM/SVG match failed — trying visible label click")
+                print("[capture] trying visible label click")
                 for cand in (seat.zfill(2), seat, seat.lstrip("0")):
                     loc = page.get_by_text(cand, exact=True)
                     for i in range(loc.count()):
@@ -194,8 +191,18 @@ def run(origin: str, destination: str, date: str, departure: str,
                         break
 
             if clicked:
-                # Some flows only POST LockSeat after a 'Continuar' step.
-                _click_proceed_button(page, _PROCEED_SELECTORS)
+                # Some flows only POST LockSeat after a 'Continuar' step — click
+                # the first visible proceed button if one is present.
+                for sel in ("button:has-text('Finalizar compra')",
+                            "button:has-text('Continuar')",
+                            "button:has-text('Prosseguir')"):
+                    try:
+                        btn = page.locator(sel).first
+                        if btn.is_visible(timeout=2000):
+                            btn.click(timeout=4000, force=True)
+                            break
+                    except Exception:
+                        continue
 
             if not clicked:
                 print("[capture] could not click a seat — dumping seat-map DOM "

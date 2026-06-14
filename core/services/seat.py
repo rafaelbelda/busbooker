@@ -1,12 +1,18 @@
 """
-Steps 3-4 of the flow: seat-availability check and seat locking (UI click with
-coordinate fallback, then a direct LockSeat API POST as a last resort).
+Steps 3-4 of the flow: seat-availability check and seat locking.
+
+Locking is done through mobifacil's authoritative LockSeat API POST — exactly
+what mobifacil's own frontend issues via fetch() when a seat is clicked. The POST
+returns an explicit ``success`` flag and a ``seatUUID``, which is the only
+deterministic proof a seat is held. (The former canvas-coordinate "UI lock" was
+removed: mobifacil renders the seat map on a <canvas>, so a click could never be
+verified and always reported false success — see git history / the debug logs.)
 """
 from __future__ import annotations
 
 import json
 import random
-from typing import Optional, Tuple
+from typing import Optional
 
 from playwright.sync_api import Page
 
@@ -130,197 +136,8 @@ def check_seat_availability(seat_map: list, params: RouteParams) -> bool:
 
 
 # ─────────────────────────────────────────────────────────────────
-# Coordinate extraction
+# Step 4 — Lock seat (authoritative LockSeat API)
 # ─────────────────────────────────────────────────────────────────
-def extract_seat_coordinates(seat_map: list, seat_number: str) -> Optional[Tuple[float, float]]:
-    """Return (row_index, col_index) of the target seat within the seatMap 2-D array.
-
-    Uses the array structure as the coordinate system — exactly as parse_seat_map does.
-    Any "x"/"y" fields in the raw seat dict are BusDetails metadata, NOT visual positions
-    (parse_seat_map explicitly avoids them for the same reason). The caller scales these
-    grid indices to pixel positions using the container's bounding box.
-    """
-    target = str(seat_number).strip()
-    target_norm = target.lstrip("0") or "0"
-    for n, row in enumerate(seat_map):
-        if not isinstance(row, list) or len(row) == 0:
-            continue
-        for i, seat in enumerate(row):
-            if not isinstance(seat, dict):
-                continue
-            raw = seat.get("numero", -99)
-            if raw in (-99, "-99", None):
-                continue
-            seat_str = str(raw).strip()
-            if seat_str == target or (seat_str.lstrip("0") or "0") == target_norm:
-                log.info(f"[seatmap] found seat {seat_number} at grid [{n}][{i}]: {json.dumps(seat)[:200]}")
-                return (float(n), float(i))
-    log.warning(f"[seatmap] seat {seat_number} not found in seatMap")
-    return None
-
-
-# ─────────────────────────────────────────────────────────────────
-# UI clicking helpers
-# ─────────────────────────────────────────────────────────────────
-_PROCEED_SELECTORS = [
-    "button:has-text('Finalizar compra')",
-    "button:has-text('Continuar')",
-    "button:has-text('Prosseguir')",
-    "a:has-text('Finalizar compra')",
-    "a:has-text('Continuar')",
-    "[data-action='continue']",
-]
-
-
-def _click_proceed_button(page: Page, selectors: list[str]) -> bool:
-    for sel in selectors:
-        try:
-            btn = page.locator(sel).first
-            if btn.is_visible(timeout=5000):
-                log.info(f"[step 4] found proceed button: {sel}")
-                btn.click(timeout=5000, force=True)
-                jitter(1000, 2000)
-                return True
-        except Exception:  # FIX (bug 2)
-            continue
-    return False
-
-
-def find_clickable_seat_in_ui(page: Page, seat_number: str) -> bool:
-    """Find and click the seat in the UI using DOM/SVG/aria selectors."""
-    target = str(seat_number).strip()
-
-    svg_texts = page.locator("svg text, svg tspan")
-    svg_count = svg_texts.count()
-    log.debug(f"[step 4] SVG text elements on page: {svg_count}")
-    matched_svg_texts: list[str] = []
-    for i in range(svg_count):
-        try:
-            text_el = svg_texts.nth(i)
-            text = (text_el.text_content() or "").strip()
-            if text:
-                matched_svg_texts.append(repr(text))
-            if text == target or text.lstrip("0") == target.lstrip("0"):
-                log.info(f"[seatmap] found SVG text '{text}' matching seat {target}")
-                parent = text_el.locator("..")
-                try:
-                    parent.scroll_into_view_if_needed(timeout=2000)
-                except Exception:
-                    pass
-                parent.click(timeout=5000, force=True)
-                jitter(500, 1000)
-                return True
-        except Exception:  # FIX (bug 2)
-            continue
-    if matched_svg_texts:
-        log.debug(f"[step 4] SVG texts sample (target='{target}'): {', '.join(matched_svg_texts[:8])}")
-
-    attr_selectors = [
-        f"[data-seat='{target}']",
-        f"[data-seat-number='{target}']",
-        f"[data-seat-id*='{target}']",
-        f"[id*='seat-{target}']",
-        f"[id*='seat_{target}']",
-        f"[id*='poltrona-{target}']",
-    ]
-    for selector in attr_selectors:
-        try:
-            if page.locator(selector).count() > 0:
-                el = page.locator(selector).first
-                if el.is_visible(timeout=2000):
-                    log.info(f"[seatmap] found seat via selector: {selector}")
-                    try:
-                        el.scroll_into_view_if_needed(timeout=2000)
-                    except Exception:
-                        pass
-                    el.click(timeout=5000, force=True)
-                    jitter(500, 1000)
-                    return True
-        except Exception:  # FIX (bug 2)
-            continue
-
-    try:
-        all_elements = page.locator("[aria-label]")
-        for i in range(all_elements.count()):
-            el = all_elements.nth(i)
-            label = el.get_attribute("aria-label") or ""
-            if target in label or target.lstrip("0") in label:
-                log.info(f"[seatmap] found seat via aria-label: {label}")
-                try:
-                    el.scroll_into_view_if_needed(timeout=2000)
-                except Exception:
-                    pass
-                el.click(timeout=5000, force=True)
-                jitter(500, 1000)
-                return True
-    except Exception:  # FIX (bug 2)
-        pass
-
-    log.warning(f"[step 4] DOM/SVG search exhausted — seat '{target}' not found in UI")
-    return False
-
-
-# ─────────────────────────────────────────────────────────────────
-# Step 4 — Lock seat
-# ─────────────────────────────────────────────────────────────────
-def _lock_via_coordinates(page: Page, trip: dict, params: RouteParams) -> bool:
-    seat_map = trip["seatMap"]
-    coords = extract_seat_coordinates(seat_map, params.seat)
-    if not coords:
-        return False
-
-    # Compute grid dimensions so we can scale array indices to pixel fractions.
-    # Empty rows (len==0) are floor separators — exclude them from the row count.
-    non_empty_rows = [r for r in seat_map if isinstance(r, list) and len(r) > 0]
-    grid_rows = max(len(non_empty_rows), 1)
-    grid_cols = max((len(r) for r in non_empty_rows), default=1)
-    # coords = (n=outer_row_index, i=inner_col_index); scale to [0,1] fractions
-    # with 0.5-cell offset so we land in the centre of each cell.
-    row_frac = (coords[0] + 0.5) / grid_rows   # vertical: front → back
-    col_frac = (coords[1] + 0.5) / grid_cols   # horizontal: left → right
-
-    containers = page.locator("canvas, svg, [class*='busMap'], [class*='seatmap']")
-    for idx in range(containers.count()):
-        try:
-            container = containers.nth(idx)
-            box = container.bounding_box()
-            if not (box and box["width"] > 100 and box["height"] > 100):
-                continue
-            try:
-                container.scroll_into_view_if_needed(timeout=2000)
-                box = container.bounding_box() or box
-            except Exception:
-                pass
-            click_x = box["x"] + col_frac * box["width"]
-            click_y = box["y"] + row_frac * box["height"]
-            log.info(
-                f"[step 4] grid [{coords[0]:.0f}][{coords[1]:.0f}] of "
-                f"{grid_rows}×{grid_cols} → clicking at ({click_x:.0f}, {click_y:.0f})"
-            )
-            page.mouse.click(click_x, click_y)
-            jitter(500, 1000)
-            _click_proceed_button(page, ["button:has-text('Continuar')",
-                                         "button:has-text('Finalizar compra')"])
-            return True
-        except Exception:  # FIX (bug 2)
-            continue
-    log.warning("[step 4] coordinate click: no valid container found — falling back to API")
-    return False
-
-
-def lock_seat_ui(page: Page, trip: dict, params: RouteParams) -> bool:
-    """Try to lock the seat through UI interaction."""
-    log.info(f"[step 4] attempting UI seat lock for seat {params.seat}")
-
-    if find_clickable_seat_in_ui(page, params.seat):
-        log.info("[step 4] seat clicked via DOM selector")
-        jitter(1000, 2000)
-        if _click_proceed_button(page, _PROCEED_SELECTORS):
-            return True
-
-    return _lock_via_coordinates(page, trip, params)
-
-
 def _coerce_seats_with_price(trip: dict) -> str:
     """
     FIX (bug 4): the original sent ``str(trip.get("seatsWithPrice", ""))``.
@@ -418,14 +235,21 @@ def _build_lock_payload(trip: dict, params: RouteParams) -> dict:
     return {k: v for k, v in payload.items() if v is not None and v != ""}
 
 
-def lock_seat_api(page: Page, trip: dict, params: RouteParams) -> bool:
-    """API fallback for seat locking — posts the frontend's URLSearchParams form."""
-    log.info("[step 4] API fallback — POSTing LockSeat")
+def lock_seat_api(page: Page, trip: dict, params: RouteParams) -> Optional[str]:
+    """Lock the seat via mobifacil's LockSeat API — posts the frontend's
+    URLSearchParams form.
+
+    Returns the ``seatUUID`` (proof of hold) on success, or ``None`` when the
+    seat is declined / not lockable (business decline — caller maps to a soft
+    fail). Raises only on transport-level failures (HTTP error / unparseable
+    body), which ``retry`` absorbs and, if persistent, surfaces as a hard error.
+    """
+    log.info("[step 4] locking seat via LockSeat API")
     payload = _build_lock_payload(trip, params)
     log.info(f"[step 4] LockSeat payload keys: {list(payload.keys())}")
     log.info(f"[step 4] LockSeat payload: {json.dumps(payload, indent=2)[:500]}")
 
-    def _post() -> bool:
+    def _post() -> Optional[str]:
         # Headers mirror mobifacil's own fetch: only Content-Type. (Referer is kept
         # for anti-bot parity — a real browser would send it automatically.)
         resp = page.request.post(
@@ -453,25 +277,37 @@ def lock_seat_api(page: Page, trip: dict, params: RouteParams) -> bool:
             if "Unexpected token" in error_msg:
                 # Server couldn't parse our payload — retrying won't help, and a
                 # malformed payload is a code bug, not a busy seat. Log loudly and
-                # stop (return False → exit 1) instead of resetting the browser.
+                # stop (return None → soft fail) instead of resetting the browser.
                 log.error("[step 4] Server JSON parse error — malformed payload (bug)")
                 log.error(f"[step 4] Full payload sent: {json.dumps(payload)}")
-                return False
+                return None
             # Business decline (seat taken / not lockable). Mirrors the frontend,
             # which just surfaces o.error. Don't retry or reset the browser — report
             # unavailable so the scheduler retries on its normal interval.
             log.warning(f"[step 4] LockSeat declined: {title or error_msg}")
-            return False
+            return None
 
-        log.info(f"[step 4] LockSeat success — uuid={data.get('seatUUID')}")
-        return True
+        # success=true. seatUUID is mobifacil's hold token and our authoritative
+        # proof; on the rare success-without-uuid, treat the success flag itself as
+        # proof (mirrors the frontend) but flag it so it's visible in the logs.
+        seat_uuid = data.get("seatUUID")
+        if not seat_uuid:
+            log.warning("[step 4] LockSeat success but no seatUUID — trusting success flag")
+            seat_uuid = "locked"
+        log.info(f"[step 4] LockSeat success — uuid={seat_uuid}")
+        return seat_uuid
 
     return retry(_post, "api_seat_lock", attempts=3)
 
 
-def lock_seat(page: Page, trip: dict, params: RouteParams) -> bool:
-    """Main seat locking function: UI first, API fallback."""
-    log.info("[step 4] stimulating interactions before lock")
+def lock_seat(page: Page, trip: dict, params: RouteParams) -> Optional[str]:
+    """Lock the seat. Returns the ``seatUUID`` on success, else ``None``.
+
+    The LockSeat API POST is the single authoritative path (mobifacil's own
+    frontend locks the same way). We do a few human-like mouse movements first
+    purely for anti-bot parity — they are not a success signal.
+    """
+    log.info("[step 4] warming interactions before lock")
     for _ in range(3):
         try:
             page.mouse.move(random.randint(300, 800), random.randint(300, 600))
@@ -479,9 +315,4 @@ def lock_seat(page: Page, trip: dict, params: RouteParams) -> bool:
         except Exception:  # FIX (bug 2)
             pass
 
-    if lock_seat_ui(page, trip, params):
-        log.info(f"[step 4] seat {params.seat} locked via UI")
-        return True
-
-    log.warning("[step 4] UI lock failed — falling back to API")
     return lock_seat_api(page, trip, params)
