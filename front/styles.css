@@ -565,12 +565,10 @@ table.recs .mono7{ font-family:var(--seg7); color:var(--seg-color); font-size:13
 .segbtn:hover{ color:var(--txt); }
 .segbtn[aria-pressed="true"]{ color:var(--txt); background:var(--surface-2); }
 
-/* compact date row: field + Today/Tomorrow quick-pick chips */
-.daterow{ display:flex; gap:10px; align-items:center; flex-wrap:wrap; }
-.daterow #searchDate{ flex:1; min-width:150px; width:auto; }
-.chiprow{ display:flex; gap:6px; flex:none; }
+/* date quick-picks — two compact chips (only today/tomorrow are bookable) */
+.chiprow{ display:flex; gap:8px; }
 .chip{
-  min-height:36px; padding:6px 14px; cursor:pointer;
+  min-height:40px; padding:8px 22px; cursor:pointer;
   font-family:var(--ui); font-size:12px; font-weight:500; letter-spacing:.01em;
   color:var(--txt-dim); background:transparent;
   border:1px solid var(--border-hi); border-radius:999px;

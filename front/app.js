@@ -446,18 +446,17 @@
     const originSel = el("select", { id: "originSel" }, makeOpts("19052")); // default: Araraquara
     const destSel   = el("select", { id: "destSel"   }, makeOpts("-3"));    // default: São Paulo
 
-    // Compact picker: a real date field (any future date) with Today/Tomorrow quick-picks.
-    const dateInput = el("input", { type: "date", id: "searchDate", value: today, min: today });
-    const todayChip = el("button", { class: "chip", type: "button", "aria-pressed": "true",  text: "Today"    });
-    const tomChip   = el("button", { class: "chip", type: "button", "aria-pressed": "false", text: "Tomorrow" });
-    const syncChips = () => {
-      const d = dateInput.value;
+    // Only today/tomorrow are bookable, so two compact chips cover every case.
+    const hiddenDate = el("input", { type: "hidden", id: "searchDate", value: today });
+    const todayChip  = el("button", { class: "chip", type: "button", "aria-pressed": "true",  text: "Today"    });
+    const tomChip    = el("button", { class: "chip", type: "button", "aria-pressed": "false", text: "Tomorrow" });
+    const setDay = (d) => {
+      hiddenDate.value = d;
       todayChip.setAttribute("aria-pressed", d === today    ? "true" : "false");
       tomChip.setAttribute("aria-pressed",   d === tomorrow ? "true" : "false");
     };
-    todayChip.addEventListener("click", () => { dateInput.value = today;    syncChips(); });
-    tomChip.addEventListener("click",   () => { dateInput.value = tomorrow; syncChips(); });
-    dateInput.addEventListener("change", syncChips);
+    todayChip.addEventListener("click", () => setDay(today));
+    tomChip.addEventListener("click",   () => setDay(tomorrow));
 
     const swapBtn = el("button", {
       class: "swapbtn", type: "button", "aria-label": "swap origin and destination", text: "⇄",
@@ -485,11 +484,9 @@
         ]),
       ]),
       el("div", { class: "field" }, [
-        el("label", { for: "searchDate", text: "Date" }),
-        el("div", { class: "daterow" }, [
-          dateInput,
-          el("div", { class: "chiprow" }, [todayChip, tomChip]),
-        ]),
+        el("label", { text: "Date" }),
+        el("div", { class: "chiprow" }, [todayChip, tomChip]),
+        hiddenDate,
       ]),
     ]);
 
