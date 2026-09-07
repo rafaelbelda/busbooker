@@ -377,7 +377,7 @@ select option:checked{ background:#2a2317; color:var(--amber); }
   text-shadow:0 0 6px rgba(255,184,74,.30); transition:box-shadow .12s, transform .06s, background .12s;
 }
 .seat.avail{ border-color:rgba(232,160,48,.40); }
-.seat.avail:hover{ background:rgba(232,160,48,.10); }
+.seat.avail:not(.sel):hover{ background:rgba(232,160,48,.10); }
 .seat.taken{ color:var(--txt-faint); background:rgba(0,0,0,.4); border-color:rgba(255,255,255,.05);
   cursor:not-allowed; text-shadow:none; }
 .seat.taken::before{ content:""; position:absolute; inset:8px; border-radius:3px;
