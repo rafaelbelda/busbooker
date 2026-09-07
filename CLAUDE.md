@@ -32,7 +32,10 @@ Production runs under systemd: `sudo systemctl restart busbooker`
 All config is in `.env` (never committed). Key variables:
 - `ADMIN_PASSWORD` — required, no default; app refuses to start without it
 - `HEADLESS` — `false` for headed browser (dev), `true` for headless (prod)
-- `SCHEDULER_INTERVAL` — minutes between re-lock attempts (default 21)
+- `SCHEDULER_INTERVAL` — minutes between re-lock attempts (default 20)
+- `RELOCK_STOP_MINUTES_BEFORE_DEPARTURE` — stop re-locking this long before departure
+  (default 15). The provider delists a trip some minutes before it leaves, so a re-lock
+  landing after that point cannot succeed.
 - `WAIT_AFTER_LOCK` — seconds to hold open checkout tab before confirming (default 60)
 - `RATE_LIMIT_PER_MIN` — `0` disables per-IP rate limiting
 
@@ -89,6 +92,13 @@ On restart, `rehydrate_relocks()` in `main.py` re-arms jobs for all active reser
 | `0` | Locked successfully | 201 |
 | `1` | Seat unavailable / soft fail (will retry) | 409 |
 | `2` | Unrecoverable error | 500 |
+| `3` | Trip no longer offered by the provider (terminal) | 409 |
+
+Exit `3` is a statement about the world, not a fault: the provider delisted the trip as
+departure approached, or every departure for the date has gone. The reservation becomes
+`expired` (not `failed`), no re-lock is scheduled, and — unlike exit `2` — the browser
+profile is **not** reset and the flow is **not** retried, since neither can bring the
+trip back.
 
 ### Data Model
 

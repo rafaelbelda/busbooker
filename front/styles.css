@@ -519,6 +519,8 @@ table.recs .mono7{ font-family:var(--seg7); color:var(--seg-color); font-size:13
 .progline.working .ptag,.progline.soft-fault .ptag{ color:var(--warn); }
 .progline.hard-fault .ptag,.progline.expired .ptag{ color:var(--bad); }
 .progline.cancelled .ptag{ color:var(--neutral); }
+/* Provider withdrew the trip — terminal, but not a fault of ours: warn, not bad. */
+.progline.no-longer-offered .ptag{ color:var(--warn); }
 
 .twocount{ display:grid; grid-template-columns:1.5fr 1fr; gap:10px; margin:12px 0; }
 .bigcount{ text-align:center; padding:14px 8px; background:var(--surface-1);

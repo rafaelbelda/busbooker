@@ -16,6 +16,7 @@ from .config import settings
 from .models.schemas import ReservationRecord, ReservationStatus
 from .persistence import ReservationDB
 from .utils.logger import log
+from .utils.time_utils import relock_cutoff
 
 # Monotonic process start, used for the /health uptime figure.
 START_MONOTONIC: float = time.monotonic()
@@ -116,8 +117,13 @@ class ReservationStore:
                 elif (
                     rec.status in (ReservationStatus.locked, ReservationStatus.failed)
                     and rec.departure_datetime is not None
-                    and now >= rec.departure_datetime
+                    and now >= relock_cutoff(
+                        rec.departure_datetime,
+                        settings.relock_stop_minutes_before_departure,
+                    )
                 ):
+                    # Same pre-departure cutoff the scheduler uses, so a restart
+                    # agrees with a running process about what is still live.
                     new_status = ReservationStatus.expired
                 if new_status != rec.status:
                     rec = rec.model_copy(

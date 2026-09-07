@@ -6,6 +6,7 @@ the seat/checkout steps.
 from __future__ import annotations
 
 import json
+import logging
 import time
 from typing import Callable, Optional, Tuple
 
@@ -15,7 +16,6 @@ from ..config import BUS_DETAILS_PATH, settings
 from ..models.schemas import RouteParams
 from ..utils.logger import log
 from .browser import (
-    TelemetryWatcher,
     check_detection,
     jitter,
     retry,
@@ -29,24 +29,44 @@ from .htmlsearch import (
 )
 
 
+class TripNotOffered(RuntimeError):
+    """The provider no longer lists this trip.
+
+    A **definitive negative about the world**, not a fault in our machinery: the
+    trip was delisted as departure approached, or the date rolled over because every
+    departure for it has gone. Distinct from a resolution *failure* (fetch error,
+    changed page structure), which is worth falling back and retrying for.
+
+    Raised only when the search HTML parsed cleanly and simply does not contain the
+    requested trip — so the negative is trustworthy. Callers map it to exit code 3,
+    which skips the XHR-intercept fallback, the profile reset and the retry, all of
+    which are guaranteed to fail for this condition.
+    """
+
+
 # ─────────────────────────────────────────────────────────────────
 # Seat-map debug helper
 # ─────────────────────────────────────────────────────────────────
 def debug_seat_map_structure(seat_map: list) -> None:
-    """Log the structure of seatMap to understand coordinate fields."""
-    log.info("[seatmap] debugging seatMap structure:")
+    """Log the structure of seatMap to understand coordinate fields.
+
+    DEBUG, not INFO: this is developer instrumentation and it lands in the
+    per-reservation log the user watches live in the Monitor.
+    """
+    if not log.isEnabledFor(logging.DEBUG):
+        return
     for i, row in enumerate(seat_map[:3]):  # First 3 rows
         if isinstance(row, list) and len(row) > 0:
             seat = row[0]
-            log.info(f"[seatmap] row {i}, first seat keys: {list(seat.keys())}")
-            log.info(f"[seatmap] row {i}, first seat data: {json.dumps(seat)[:300]}")
+            log.debug(f"[seatmap] row {i}, first seat keys: {list(seat.keys())}")
+            log.debug(f"[seatmap] row {i}, first seat data: {json.dumps(seat)[:300]}")
             break
 
 
 # ─────────────────────────────────────────────────────────────────
 # Step 1 — Search page
 # ─────────────────────────────────────────────────────────────────
-def open_search_page(page: Page, telemetry: TelemetryWatcher, params: RouteParams) -> None:
+def open_search_page(page: Page, params: RouteParams) -> None:
     log.info("[step 1] loading search page")
 
     def _load() -> None:
@@ -295,6 +315,9 @@ def _resolve_trip_direct(page: Page, params: RouteParams) -> Optional[dict]:
     time the page is loaded, Vue has mounted and CONSUMED the ``:data="..."``
     attribute that carries lsServicos, so the rendered DOM no longer contains it.
     The raw HTTP response still does (it is server-rendered).
+
+    Raises ``TripNotOffered`` when the HTML parsed fine but does not list the trip —
+    see that class for why that is treated differently from a failure.
     """
     try:
         html_resp = page.request.get(params.search_url, headers=_HTML_HEADERS, timeout=25_000)
@@ -308,19 +331,27 @@ def _resolve_trip_direct(page: Page, params: RouteParams) -> Optional[dict]:
 
     trips = _parse_lsservicos(html)
     if not trips:
+        # Could be a changed page structure rather than an empty result — not
+        # conclusive, so fall back rather than declaring the trip gone.
         log.warning("[step 2] direct: no lsServicos in page HTML")
         return None
 
-    trips = filter_trips_by_date(trips, params.date)
-    if not trips:
-        log.warning("[step 2] direct: no trips for requested date in HTML")
-        return None
+    # From here the HTML parsed cleanly and DID contain trips, so an absent trip is
+    # a trustworthy negative rather than a parsing/transport problem.
+    dated = filter_trips_by_date(trips, params.date)
+    if not dated:
+        raise TripNotOffered(
+            f"no trips left for {params.date} — the provider has rolled over to the "
+            f"next day's departures ({len(trips)} trip(s) listed, none on the requested date)"
+        )
 
-    matching = next((t for t in trips if _dep_hour(t) == params.departure), None)
+    matching = next((t for t in dated if _dep_hour(t) == params.departure), None)
     if not matching:
-        available = [_dep_hour(t) for t in trips]
-        log.warning(f"[step 2] direct: departure {params.departure} not in HTML trips {available}")
-        return None
+        available = [_dep_hour(t) for t in dated]
+        raise TripNotOffered(
+            f"departure {params.departure} is no longer offered on {params.date} — "
+            f"provider now lists {available}"
+        )
 
     url = build_bus_details_url(matching, params.date)
     log.info("[step 2] direct: fetching BusDetails (no UI click)")
@@ -353,7 +384,14 @@ def _resolve_trip_direct(page: Page, params: RouteParams) -> Optional[dict]:
 
 def resolve_trip(page: Page, params: RouteParams) -> dict:
     """Resolve the target trip dict. Direct HTTP path first (deterministic),
-    XHR-intercept click path as a fallback."""
+    XHR-intercept click path as a fallback.
+
+    ``TripNotOffered`` from the direct path propagates deliberately: if the search
+    HTML does not list the trip, the trip cards rendered from that same HTML will
+    not contain it either, so the intercept fallback is guaranteed to fail. It used
+    to run anyway — two page loads and ~48 s to re-derive a known answer, then a
+    profile reset and a full retry on top.
+    """
     log.info("[step 2] resolving trip")
 
     direct = _resolve_trip_direct(page, params)

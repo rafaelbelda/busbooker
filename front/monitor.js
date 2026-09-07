@@ -38,7 +38,13 @@
         return rec.exit_code === 2
           ? ["HARD FAULT", "Unrecoverable error,  re-lock cycle stopped. Re-reserve to retry."]
           : ["SOFT FAULT", "Last re-lock failed,  scheduler will retry next interval."];
-      case "expired": return ["EXPIRED", "Bus has departed,  monitoring stopped."];
+      case "expired":
+        // Two distinct causes, and the difference matters to the user: exit 3 means
+        // the provider pulled the trip (nothing was wrong with the seat or the hold),
+        // otherwise we simply reached the pre-departure cutoff.
+        return rec.exit_code === 3
+          ? ["NO LONGER OFFERED", "Provider stopped selling this departure,  re-lock cycle stopped."]
+          : ["EXPIRED", "Departure reached,  monitoring stopped."];
       case "cancelled": return ["CANCELLED", "Reservation cancelled,  re-lock job removed."];
       default: return ["—", ""];
     }

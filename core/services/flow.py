@@ -10,6 +10,12 @@ exit code is:
     0  →  seat locked and confirmed   (trip_dict is the resolved trip)
     1  →  seat unavailable / lock failed   (trip_dict is None)
     2  →  unrecoverable flow error   (trip_dict is None)
+    3  →  trip no longer offered by the provider   (trip_dict is None)
+
+Exit 3 is a statement about the world, not a fault: the trip was delisted as
+departure approached, or every departure for the date has gone. It is terminal —
+retrying, resetting the profile, or re-locking cannot bring the trip back — so
+callers expire the reservation rather than marking it failed.
 
 The trip dict (departureHour, date, arrivalHour, …) lets the caller compute the
 reservation's departure_datetime for the re-lock scheduler.
@@ -18,6 +24,8 @@ from __future__ import annotations
 
 import random
 import time
+from contextlib import contextmanager
+from typing import Iterator
 
 from playwright.sync_api import Page, sync_playwright
 
@@ -34,7 +42,7 @@ from .browser import (
 )
 from .checkout import corroborate_lock, proceed_to_checkout
 from .seat import check_seat_availability, lock_seat, parse_seat_map, seat_is_locked
-from .trip import open_search_page, resolve_trip
+from .trip import TripNotOffered, open_search_page, resolve_trip
 
 
 # ─────────────────────────────────────────────────────────────────
@@ -92,7 +100,43 @@ def resolve_search_params(
 # ─────────────────────────────────────────────────────────────────
 # Single flow execution (the original run_flow body)
 # ─────────────────────────────────────────────────────────────────
-def _stimulate_fingerprint(page: Page, telemetry: TelemetryWatcher) -> None:
+class _Timings:
+    """Per-step wall-clock accumulator, emitted as one line at the end of a flow.
+
+    Every duration in the improvement plan was reconstructed by subtracting log
+    timestamps by hand; this makes regressions (and wins) visible directly. One
+    summary line rather than a line per step keeps the Monitor's live log readable.
+    """
+
+    def __init__(self) -> None:
+        self._steps: dict[str, float] = {}
+
+    @contextmanager
+    def step(self, label: str) -> Iterator[None]:
+        t0 = time.monotonic()
+        try:
+            yield
+        finally:
+            self._steps[label] = self._steps.get(label, 0.0) + (time.monotonic() - t0)
+
+    def summary(self, total: float) -> str:
+        parts = " ".join(f"{k}={v:.1f}s" for k, v in self._steps.items())
+        return f"total={total:.1f}s {parts}"
+
+
+def _stimulate_fingerprint(page: Page) -> None:
+    """Human-like idling before the lock POST.
+
+    The 15 s ``telemetry.wait_for`` that used to end this function is gone: the
+    fingerprint response it waited on was never observed in production (0 sightings
+    across 11 runs), so it burned its full timeout every flow — ~40% of total flow
+    time — while every one of those flows locked successfully regardless. See
+    ``browser.TelemetryWatcher``.
+
+    The idling below is retained deliberately: it is cheap (~2-6 s) and may still
+    matter for behavioural fingerprinting, which is a separate question from the
+    dead network wait.
+    """
     log.info("[step 4] stimulating fingerprint generation")
     for _ in range(random.randint(2, 4)):
         stochastic_idle(page, "fingerprint_stimulus")
@@ -105,31 +149,46 @@ def _stimulate_fingerprint(page: Page, telemetry: TelemetryWatcher) -> None:
                 jitter(600, 1200)
     except Exception:  # FIX (bug 2)
         pass
-    if not telemetry.seen:
-        telemetry.wait_for(timeout=15.0)
 
 
 def _execute_flow(playwright, params: RouteParams, is_relock: bool = False) -> tuple[int, dict | None]:
     """Run the 7-step booking flow once. Returns (exit_code, trip_dict | None)."""
     start = time.monotonic()
-    ctx = build_context(playwright)
-    page = ctx.new_page()
+    t = _Timings()
+    with t.step("launch"):
+        ctx = build_context(playwright)
+        page = ctx.new_page()
     telemetry = TelemetryWatcher(start_time=start)
     page.on("response", telemetry.on_response)
 
     try:
-        open_search_page(page, telemetry, params)              # Step 1
-        trip = resolve_trip(page, params)                      # Step 2
+        with t.step("search_page"):
+            open_search_page(page, params)                     # Step 1
+        with t.step("resolve_trip"):
+            trip = resolve_trip(page, params)                  # Step 2
 
-        if not check_seat_availability(trip["seatMap"], params):  # Step 3
-            if is_relock and seat_is_locked(trip["seatMap"], params):
+        with t.step("seat_check"):                             # Step 3
+            available = check_seat_availability(trip["seatMap"], params)
+            held_by_us = is_relock and seat_is_locked(trip["seatMap"], params)
+        if not available:
+            if held_by_us:
                 log.info(f"[step 3] seat {params.seat} still locked from previous cycle — proceeding to re-lock")
             else:
                 log.error(f"[step 3] seat {params.seat} already locked. Increase task interval.")
                 return 1, None
+        elif is_relock:
+            # Our own hold has lapsed and the seat is publicly bookable again — we
+            # are re-taking it, not holding it. A near-miss worth seeing: it means
+            # SCHEDULER_INTERVAL is at or past the provider's hold TTL.
+            log.warning(
+                f"[step 3] seat {params.seat} read as FREE at re-lock — the previous "
+                "hold had already lapsed; consider lowering SCHEDULER_INTERVAL"
+            )
 
-        _stimulate_fingerprint(page, telemetry)                # Step 4 (pre)
-        seat_uuid = lock_seat(page, trip, params)              # Step 4
+        with t.step("stimulate"):
+            _stimulate_fingerprint(page)                       # Step 4 (pre)
+        with t.step("lock"):
+            seat_uuid = lock_seat(page, trip, params)          # Step 4
         if not seat_uuid:
             # None → LockSeat declined (seat taken / not lockable): soft fail,
             # scheduler retries on its interval.
@@ -141,15 +200,17 @@ def _execute_flow(playwright, params: RouteParams, is_relock: bool = False) -> t
         # browser flow does. Non-fatal: the LockSeat POST already holds the seat and
         # its seatUUID is authoritative proof, so a checkout hiccup must never turn a
         # real lock into a failure.
-        try:
-            proceed_to_checkout(page, telemetry)
-        except Exception as exc:  # FIX (bug 2)
-            log.warning(f"[step 5] checkout navigation skipped (non-fatal): {exc!r}")
+        with t.step("checkout"):
+            try:
+                proceed_to_checkout(page)
+            except Exception as exc:  # FIX (bug 2)
+                log.warning(f"[step 5] checkout navigation skipped (non-fatal): {exc!r}")
 
         # Step 6 — corroboration only, never a veto. mobifacil's seat map is cached
         # and lags a fresh hold, so a "still available" reading does NOT undo the
         # seatUUID. (This is exactly the false-negative the old 60s poll produced.)
-        corroborated = corroborate_lock(page, trip, params)
+        with t.step("corroborate"):
+            corroborated = corroborate_lock(page, trip, params)
         if corroborated is True:
             log.info("[step 6] BusDetails corroborates the lock")
         else:
@@ -158,6 +219,12 @@ def _execute_flow(playwright, params: RouteParams, is_relock: bool = False) -> t
         log.info(f"[result] seat {params.seat} locked — confirmed via seatUUID")
         return 0, trip
 
+    except TripNotOffered as exc:
+        # Definitive negative, NOT a fault: the provider no longer sells this trip.
+        # Exit 3 so the caller expires the reservation instead of resetting the
+        # browser profile and retrying — neither of which can change the answer.
+        log.warning(f"[step 2] trip no longer offered — {exc}")
+        return 3, None
     except RuntimeError as exc:
         log.error(f"[flow error] {exc}")
         return 2, None
@@ -165,6 +232,10 @@ def _execute_flow(playwright, params: RouteParams, is_relock: bool = False) -> t
         log.exception(f"[fatal] {exc}")
         return 2, None
     finally:
+        # Emitted on every path, including failures — the failure timings are the
+        # ones most worth having.
+        log.info(f"[timing] {t.summary(time.monotonic() - start)}")
+        log.info(f"[telemetry] {telemetry.summary()}")
         try:
             ctx.close()
         except Exception:  # FIX (bug 2)
@@ -199,6 +270,10 @@ def run_flow(
 
         with sync_playwright() as pw:
             code, trip = _execute_flow(pw, params, is_relock)
+            # Only a genuine fault (2) earns a profile reset + retry. Exit 3 (trip
+            # not offered) deliberately does not: the retry would reach the same
+            # conclusion, and the reset would throw away a working anti-bot session
+            # over a condition that has nothing to do with the browser.
             if code == 2:
                 log.warning("[main] flow error — resetting and retrying")
                 reset_profile(settings.user_data_dir)

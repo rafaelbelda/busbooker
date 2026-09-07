@@ -30,6 +30,7 @@ from ..models.schemas import ReservationStatus
 from ..services.flow import resolve_route_params, run_flow
 from ..state import FLOW_LOCK, store
 from ..utils.logger import log
+from ..utils.time_utils import relock_cutoff
 
 _RELOCK_PREFIX = "relock_"
 
@@ -57,16 +58,27 @@ async def _relock_job(reservation_id: str) -> None:
         cancel_relock(reservation_id)
         return
 
-    # (2) Departure passed — expire and stop.
+    # (2) Departure imminent or passed — expire and stop.
+    #
+    # The cutoff sits BEFORE departure, not at it. mobifacil delists a trip some
+    # minutes before it leaves, and a re-lock that lands after delisting cannot
+    # succeed: it used to burn a full flow, a profile reset and a whole retry to
+    # discover that (observed firing at T-89s for a trip already gone). Re-locking
+    # during boarding buys nothing anyway.
     now = datetime.now(timezone.utc)
-    if record.departure_datetime is not None and now >= record.departure_datetime:
-        await store.update(reservation_id, status=ReservationStatus.expired)
-        log.info(
-            f"scheduler: reservation {reservation_id} expired "
-            f"(departure {record.departure_datetime}) — job removed"
+    if record.departure_datetime is not None:
+        cutoff = relock_cutoff(
+            record.departure_datetime, settings.relock_stop_minutes_before_departure
         )
-        cancel_relock(reservation_id)
-        return
+        if now >= cutoff:
+            await store.update(reservation_id, status=ReservationStatus.expired)
+            log.info(
+                f"scheduler: reservation {reservation_id} expired "
+                f"(departure {record.departure_datetime}, stopping "
+                f"{settings.relock_stop_minutes_before_departure} min before) — job removed"
+            )
+            cancel_relock(reservation_id)
+            return
 
     n = record.relock_count + 1
     log.info(
@@ -145,6 +157,21 @@ async def _relock_job(reservation_id: str) -> None:
             )
         except JobLookupError:
             log.warning(f"scheduler: re-lock #{n} seat {record.seat} soft-fail — job gone, cannot reschedule")
+    elif code == 3:
+        # Trip no longer offered — terminal, and not our fault. Expire rather than
+        # fail: there is nothing to retry, the provider has stopped selling it.
+        await store.update(
+            reservation_id,
+            only_if_active=True,
+            status=ReservationStatus.expired,
+            exit_code=3,
+            error_msg="trip is no longer offered by the provider",
+        )
+        log.info(
+            f"scheduler: re-lock #{n} — trip no longer offered for {reservation_id}; "
+            "expiring and removing job"
+        )
+        cancel_relock(reservation_id)
     else:
         # (6) Hard fail — stop retrying.
         await store.update(
@@ -158,8 +185,20 @@ async def _relock_job(reservation_id: str) -> None:
         cancel_relock(reservation_id)
 
 
-def schedule_relock(reservation_id: str) -> None:
-    """Register a repeating re-lock job for this reservation (first run in 1 interval)."""
+def schedule_relock(reservation_id: str, departure_dt: Optional[datetime] = None) -> None:
+    """Register a repeating re-lock job for this reservation (first run in 1 interval).
+
+    Skipped entirely when the pre-departure cutoff has already passed — the job's
+    first run would do nothing but expire the record.
+    """
+    if departure_dt is not None:
+        cutoff = relock_cutoff(departure_dt, settings.relock_stop_minutes_before_departure)
+        if datetime.now(timezone.utc) >= cutoff:
+            log.info(
+                f"scheduler: not registering re-lock for {reservation_id} — within "
+                f"{settings.relock_stop_minutes_before_departure} min of departure {departure_dt}"
+            )
+            return
     scheduler.add_job(
         _relock_job,
         trigger=IntervalTrigger(minutes=settings.scheduler_interval),
@@ -210,9 +249,11 @@ async def rehydrate_relocks() -> None:
         if (
             rec.status in (ReservationStatus.locked, ReservationStatus.failed)
             and rec.departure_datetime is not None
-            and now < rec.departure_datetime
+            and now < relock_cutoff(
+                rec.departure_datetime, settings.relock_stop_minutes_before_departure
+            )
         ):
-            schedule_relock(rec.id)
+            schedule_relock(rec.id, rec.departure_datetime)
             count += 1
     if count:
         log.info(f"scheduler: rehydrated {count} re-lock job(s) from persisted reservations")

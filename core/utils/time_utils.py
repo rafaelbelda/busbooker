@@ -20,6 +20,18 @@ def compute_departure_datetime(date_str: str, departure_hhmm: str) -> datetime:
     return aware_local.astimezone(timezone.utc)
 
 
+def relock_cutoff(departure_dt: datetime, stop_minutes_before: int) -> datetime:
+    """Instant after which re-locking a seat is pointless.
+
+    The provider delists a trip shortly before departure, so a re-lock scheduled
+    into that window cannot succeed; and holding a seat for a passenger who is
+    already boarding buys nothing. Callers pass
+    ``settings.relock_stop_minutes_before_departure`` — kept as an argument so this
+    module stays free of config imports and trivially testable.
+    """
+    return departure_dt - timedelta(minutes=stop_minutes_before)
+
+
 def compute_arrival_datetime(date_str: str, dep_hhmm: str, arr_hhmm: str) -> datetime:
     """
     Compute arrival datetime in UTC, handling overnight trips.

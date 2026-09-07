@@ -158,29 +158,49 @@ def check_detection(page: Page, label: str = "") -> None:
 # Telemetry
 # ─────────────────────────────────────────────────────────────────
 class TelemetryWatcher:
+    """Passive observer of the site's fingerprint telemetry.
+
+    **This no longer blocks the flow.** It used to expose a ``wait_for`` that the
+    flow called with a 15 s timeout (and checkout with 5 s). Production logs showed
+    ``FINGERPRINT_PATTERN`` matching *zero* responses across 11 runs, so both waits
+    consumed their full timeout every single time — ~20 s of dead wait per flow —
+    while all 11 locks succeeded anyway. The waits are gone; this class stays purely
+    to observe, cheaply, whether the telemetry ever comes back.
+
+    ``near_misses`` exists to answer the obvious follow-up: the pattern never
+    matching does not prove the provider stopped fingerprinting, only that it is no
+    longer at *this* path. Any URL merely containing "fingerprint" is recorded, so a
+    renamed endpoint shows up in the flow summary instead of needing a special
+    debugging run.
+    """
+
     def __init__(self, start_time: float):
         self._start = start_time
         self.count = 0
         self.first_seen_at: Optional[float] = None
         self.first_delay: Optional[float] = None
+        self.near_misses: set[str] = set()
 
     def on_response(self, response: Response) -> None:
-        if FINGERPRINT_PATTERN in response.url and response.status < 400:
+        url = response.url
+        if FINGERPRINT_PATTERN in url and response.status < 400:
             self.count += 1
             now = time.monotonic()
             if self.first_seen_at is None:
                 self.first_seen_at = now
                 self.first_delay = now - self._start
                 log.info(f"[telemetry] first fingerprint at +{self.first_delay:.2f}s")
+        elif "fingerprint" in url.lower() and len(self.near_misses) < 5:
+            # Fingerprint-ish, but not where we expect it — likely a moved endpoint.
+            self.near_misses.add(url.split("?", 1)[0][:200])
 
     @property
     def seen(self) -> bool:
         return self.count > 0
 
-    def wait_for(self, timeout: float = 20.0) -> bool:
-        deadline = time.monotonic() + timeout
-        while time.monotonic() < deadline:
-            if self.seen:
-                return True
-            time.sleep(0.35)
-        return False
+    def summary(self) -> str:
+        if self.seen:
+            return f"fingerprint x{self.count} first=+{self.first_delay:.1f}s"
+        if self.near_misses:
+            return f"fingerprint NOT seen at '{FINGERPRINT_PATTERN}' — near misses: {sorted(self.near_misses)}"
+        return "fingerprint not seen"

@@ -53,9 +53,22 @@ def _client(request: Request) -> str:
     return info.log_str()
 
 # exit code → (reservation status, HTTP status, error message)
-_EXIT_STATUS = {0: ReservationStatus.locked, 1: ReservationStatus.failed, 2: ReservationStatus.failed}
-_EXIT_HTTP = {0: 201, 1: 409, 2: 500}
-_EXIT_ERR = {1: "seat unavailable or lock failed", 2: "unrecoverable flow error"}
+# Exit 3 (trip no longer offered) is terminal but not a fault: the provider stopped
+# selling this departure, so the reservation is expired rather than failed, and no
+# re-lock is scheduled. 409 because the request cannot be fulfilled as asked, not
+# because anything on our side broke.
+_EXIT_STATUS = {
+    0: ReservationStatus.locked,
+    1: ReservationStatus.failed,
+    2: ReservationStatus.failed,
+    3: ReservationStatus.expired,
+}
+_EXIT_HTTP = {0: 201, 1: 409, 2: 500, 3: 409}
+_EXIT_ERR = {
+    1: "seat unavailable or lock failed",
+    2: "unrecoverable flow error",
+    3: "trip is no longer offered by the provider",
+}
 
 
 # ─────────────────────────────────────────────────────────────────
@@ -256,7 +269,7 @@ async def create_reservation(
         return await _terminal_or(record.id, updated, response)
 
     if code == 0:
-        schedule_relock(record.id)
+        schedule_relock(record.id, updated.departure_datetime)
         log.info(f"[audit] reservation locked id={record.id} — re-lock scheduled {_client(request)}")
     else:
         log.info(

@@ -152,8 +152,13 @@ the FastAPI error shape (§7).
 |---|---|---|---|
 | 201 | `locked` | seat locked, re-lock cycle started | success |
 | 409 | `failed` | seat unavailable / lock failed | **normal business outcome**, not a crash — "seat taken, try another" |
+| 409 | `expired` | trip no longer offered by the provider (`exit_code: 3`) | terminal — "this departure is no longer on sale"; offer a different trip, **not** a retry |
 | 500 | `failed` | unrecoverable flow error | error; offer retry |
 | 422 | — | bad request body (§7) | fix the request |
+
+Both 409s share a status code, so **branch on `status` / `exit_code`, not on 409 alone**.
+`failed` (exit 1) is retryable; `expired` (exit 3) is not — the provider has stopped
+selling that departure, so no re-lock job is scheduled and retrying is pointless.
 
 #### `POST /admin/shutdown` 409 body (distinct shape)
 ```json

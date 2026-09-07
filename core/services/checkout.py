@@ -18,13 +18,13 @@ from playwright.sync_api import Page
 from ..config import BUS_DETAILS_PATH, CHECKOUT_PATH, settings
 from ..models.schemas import RouteParams
 from ..utils.logger import log
-from .browser import TelemetryWatcher, check_detection, jitter, retry
+from .browser import check_detection, jitter, retry
 
 
 # ─────────────────────────────────────────────────────────────────
 # Step 5 — Checkout (best-effort hold commit)
 # ─────────────────────────────────────────────────────────────────
-def proceed_to_checkout(page: Page, telemetry: TelemetryWatcher) -> None:
+def proceed_to_checkout(page: Page) -> None:
     log.info("[step 5] navigating to Checkout-Begin")
 
     def _go() -> None:
@@ -37,9 +37,11 @@ def proceed_to_checkout(page: Page, telemetry: TelemetryWatcher) -> None:
         check_detection(page, "checkout")
 
     retry(_go, "checkout")
-    # Short, best-effort wait: the seat is already held by the LockSeat POST, so
-    # we don't block the flow (and the global FLOW_LOCK) waiting on telemetry.
-    telemetry.wait_for(timeout=5.0)
+    # There used to be a `telemetry.wait_for(timeout=5.0)` here. Production logs
+    # showed the fingerprint response it waits on never arrives (0 sightings in 11
+    # runs), so it consumed its full timeout every time — 5 s per flow spent waiting
+    # for an event that no longer exists, while the seat was already held by the
+    # LockSeat POST. See browser.TelemetryWatcher for the diagnostics that replaced it.
 
 
 # ─────────────────────────────────────────────────────────────────

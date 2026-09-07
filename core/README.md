@@ -42,6 +42,14 @@ Exit codes returned by the flow map onto HTTP status codes:
 | 0    | seat locked & confirmed          | 201  |
 | 1    | seat unavailable / lock failed   | 409  |
 | 2    | unrecoverable flow error         | 500  |
+| 3    | trip no longer offered (terminal)| 409  |
+
+Exit `3` means the provider has stopped selling the trip — delisted as departure
+approached, or the date rolled over. It is a fact about the world rather than a
+fault, so the reservation is marked `expired` (not `failed`), no re-lock is
+scheduled, and the profile-reset-and-retry that exit `2` triggers is skipped:
+retrying cannot bring the trip back, and the reset would throw away a working
+anti-bot session.
 
 No users, completely anonymous — reservations are keyed by UUID and held in an
 in-memory store backed by a small SQLite file, so they (and their re-lock jobs)
@@ -318,6 +326,7 @@ departure and seat are always supplied per request.
 | `MAX_RETRIES`        | `1`                         | Attempts for retry-wrapped browser steps.                |
 | `WAIT_AFTER_LOCK`    | `60`                        | Seconds the lock is held before confirmation.            |
 | `SCHEDULER_INTERVAL` | `20`                        | Minutes between a reservation's re-lock attempts.        |
+| `RELOCK_STOP_MINUTES_BEFORE_DEPARTURE` | `15`      | Stop re-locking this many minutes before departure. The provider delists a trip shortly before it leaves, so a later re-lock cannot succeed. |
 | `RESERVATION_DB`     | `core/data/reservations.db` | SQLite file for durable reservations. `:memory:` disables persistence. |
 | `RATE_LIMIT_PER_MIN` | `0` (disabled)              | Per-client-IP request cap/min on the browser endpoints (`/seats`, `/search`, `/reservations`). `0` = off. |
 | `MAX_FLOW_QUEUE`     | `8`                         | Max concurrent (queued + running) browser requests before new ones get a fast `503`. `0` = off. |
@@ -343,11 +352,14 @@ must keep re-locking a bit under the expiry window to hold the seat continuously
 
 - **One job per reservation.** When `POST /reservations` locks a seat (exit 0),
   a dedicated APScheduler job `relock_<id>` is registered that re-locks that exact
-  seat **every `SCHEDULER_INTERVAL` minutes** (21 by default). Its first run is one
+  seat **every `SCHEDULER_INTERVAL` minutes** (20 by default). Its first run is one
   interval after the initial lock.
 - **Auto-expiry.** Each reservation stores `departure_datetime` (absolute **UTC**).
-  When the job sees `now >= departure_datetime` it sets the status to `expired`,
-  removes its own job, and stops — at that point the bus has left and no one can
+  When the job sees `now >= departure_datetime - RELOCK_STOP_MINUTES_BEFORE_DEPARTURE`
+  it sets the status to `expired`, removes its own job, and stops. The cutoff sits
+  **before** departure because the provider delists a trip some minutes ahead of it;
+  a re-lock landing after that point burns a full flow to discover it cannot work.
+  At that point the bus is boarding and no one can
   reserve the seat anymore. `relock_count` counts the successful cycles so far.
 - **Manual cancellation.** `DELETE /reservations/{id}` calls `cancel_relock(id)`
   before forgetting the record, so no orphan job fires on a deleted id.

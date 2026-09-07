@@ -48,6 +48,12 @@ class Settings(BaseSettings):
 
     # ---- scheduler ----
     scheduler_interval: int = 20  # minutes
+    # Stop re-locking this many minutes BEFORE departure. mobifacil delists a trip
+    # some minutes before it leaves (observed: still listed at T-22min, gone by
+    # T-90s), and a re-lock that lands after delisting cannot succeed — it used to
+    # burn a full flow, a profile reset and a retry to discover that. Re-locking in
+    # the last few minutes has no value anyway: the passenger is already boarding.
+    relock_stop_minutes_before_departure: int = 15
 
     # ---- persistence ----
     # SQLite file holding reservations so they (and their re-lock jobs) survive a
