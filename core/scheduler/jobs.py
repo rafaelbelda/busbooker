@@ -34,6 +34,15 @@ from ..utils.time_utils import relock_cutoff
 
 _RELOCK_PREFIX = "relock_"
 
+# APScheduler defaults misfire_grace_time to 1 SECOND: a job whose fire time passes
+# while the event loop is busy is silently DISCARDED ("Run time of job was missed")
+# rather than run late. For a service whose whole purpose is firing reliably every N
+# minutes for hours that is the wrong default — a slow SQLite commit, a burst of
+# requests or a host suspend is enough to blow a 1 s budget, and the seat then stops
+# being re-locked with no error anywhere. 5 minutes is still far inside the interval,
+# so a late run is always better than a skipped one.
+_MISFIRE_GRACE_SECONDS = 300
+
 scheduler = AsyncIOScheduler(timezone="America/Sao_Paulo")
 
 
@@ -146,6 +155,11 @@ async def _relock_job(reservation_id: str) -> None:
         try:
             scheduler.reschedule_job(
                 _relock_job_id(reservation_id),
+                # NOTE: do NOT pass misfire_grace_time here. reschedule_job forwards
+                # extra kwargs to the *trigger* constructor, and since we hand it a
+                # trigger instance they are silently discarded — it would read as
+                # configured while doing nothing. modify_job preserves the value set
+                # by add_job, so the job keeps _MISFIRE_GRACE_SECONDS across this.
                 trigger=IntervalTrigger(
                     minutes=settings.scheduler_interval,
                     start_date=datetime.now(timezone.utc) + timedelta(minutes=retry_in),
@@ -207,6 +221,7 @@ def schedule_relock(reservation_id: str, departure_dt: Optional[datetime] = None
         max_instances=1,
         coalesce=True,
         replace_existing=True,
+        misfire_grace_time=_MISFIRE_GRACE_SECONDS,
     )
     log.info(
         f"scheduler: registered re-lock job for {reservation_id} "
@@ -248,6 +263,11 @@ async def rehydrate_relocks() -> None:
     for rec in await store.list():
         if (
             rec.status in (ReservationStatus.locked, ReservationStatus.failed)
+            # `failed` covers two very different things. Exit 1 is a soft fail that
+            # should keep retrying; exit 2 is unrecoverable and _relock_job
+            # deliberately removed its own job. Re-arming the latter on restart put
+            # known-broken reservations back to hammering the provider.
+            and rec.exit_code != 2
             and rec.departure_datetime is not None
             and now < relock_cutoff(
                 rec.departure_datetime, settings.relock_stop_minutes_before_departure

@@ -712,23 +712,68 @@
     reserveBtn.addEventListener("click", doReserve);
   }
 
-  function doReserve() {
+  /* Poll for the record the POST should have created. Resolves true as soon as it
+     exists, false if the POST fails first or we give up waiting. */
+  async function waitForRecord(id, getError, timeoutMs = 8000) {
+    const deadline = Date.now() + timeoutMs;
+    while (Date.now() < deadline) {
+      if (getError()) return false;
+      try { await BB.getReservation(id); return true; } catch (_) { /* not there yet */ }
+      await new Promise((r) => setTimeout(r, 350));
+    }
+    return false;
+  }
+
+  async function doReserve() {
     if (!state.trip || !state.seat || state.reserving) return;
     const s = state.search;
+    const status = $("#reserveStatus");
     const rid = Array.from(crypto.getRandomValues(new Uint8Array(4)))
       .map((b) => b.toString(16).padStart(2, "0")).join("");
-    saveMonitorId(rid);
+
     state.reserving = true; setBrowserBusy(true);
-    // POST first: the server creates the record synchronously (status=pending) before
-    // starting the 90-second browser flow, so the monitor can find it immediately.
-    BB.createReservation({
+    if (status) { status.innerHTML = ""; status.appendChild(workingBanner()); }
+
+    // POST first: the server creates the record synchronously (status=pending)
+    // before starting the ~60 s browser flow, so the monitor can track it while the
+    // flow is still running. We deliberately do NOT await this — it settles ~a
+    // minute later — but we must not discard its outcome either.
+    let postError = null;
+    const post = BB.createReservation({
       id: rid,
       origin_id: s.origin_id, destination_id: s.destination_id,
       date: s.date, departure: state.trip.departure, seat: state.seat,
-    }).catch(() => {}).finally(() => { state.reserving = false; setBrowserBusy(false); });
-    // Delay the view switch slightly so the POST reaches the server and the record
-    // exists by the time the monitor fires its first GET /reservations/{id}.
-    setTimeout(() => switchView("monitor"), 1200);
+    });
+    post.catch((e) => { postError = e; })
+        .then(() => { state.reserving = false; setBrowserBusy(false); });
+
+    // Switch views only once the record demonstrably exists. The old code paired a
+    // blind 1200 ms setTimeout with `.catch(() => {})`, so a 422 (departure >48 h),
+    // 429, 503 or network failure silently dropped the user on a monitor showing
+    // "RECORD GONE · 404" forever, with the real reason thrown away.
+    if (await waitForRecord(rid, () => postError)) {
+      saveMonitorId(rid);
+      switchView("monitor");
+      return;
+    }
+
+    if (!status) return;
+    status.innerHTML = "";
+    if (postError) {
+      // Reservation never got created — surface why and stay put so the user can fix
+      // the input or retry. Deliberately not switching views.
+      status.appendChild(errBanner(postError));
+      state.reserving = false; setBrowserBusy(false);
+      return;
+    }
+    // No error yet, but the record still isn't visible. The POST is in flight, so
+    // leave the busy state to its settle handler rather than letting a second click
+    // start a duplicate reservation.
+    saveMonitorId(rid);
+    status.appendChild(banner(
+      "warn", "NOT CONFIRMED YET",
+      "the reservation was sent but hasn't appeared — check Monitor for id " + rid
+    ));
   }
 
   function saveMonitorId(id) { state.monitorId = id; localStorage.setItem("bb_resv", id); }

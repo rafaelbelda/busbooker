@@ -1,11 +1,19 @@
 """Pydantic v2 models for all API input/output and internal flow params."""
 from __future__ import annotations
 
+import re
 from datetime import datetime, timezone
 from enum import Enum
 from typing import Optional
 
 from pydantic import BaseModel, ConfigDict, Field, computed_field, field_validator
+
+# Canonical shape of a reservation id. Clients may supply their own so they can open
+# the monitor before the flow finishes, which makes this an untrusted input that ends
+# up in a FILENAME (``<date>-<id>.log``) — so it must not contain path separators,
+# ``..`` or anything else that could escape the log directory. Defined here and reused
+# by utils.logger so the API boundary and the filesystem boundary cannot drift apart.
+SAFE_ID_RE = re.compile(r"^[A-Za-z0-9_-]{1,64}$")
 
 
 # ─────────────────────────────────────────────────────────────────
@@ -63,6 +71,25 @@ class ReservationRequest(BaseModel):
     date: str = Field(examples=["2026-05-28"], description="yyyy-mm-dd")
     departure: str = Field(examples=["00:00"], description="HH:MM (24-hour)")
     seat: str = Field(examples=["00"])
+
+    @field_validator("id")
+    @classmethod
+    def _safe_id(cls, v: Optional[str]) -> Optional[str]:
+        """Reject ids that are unsafe as a filename component.
+
+        The id reaches the filesystem as ``<date>-<id>.log``, so an unvalidated value
+        containing ``../`` would let a caller steer that write outside the log
+        directory. Rejecting at the API boundary is the fix; utils.logger re-checks
+        with the same pattern as defence in depth.
+        """
+        if v is None:
+            return None
+        v = v.strip()
+        if not SAFE_ID_RE.match(v):
+            raise ValueError(
+                "id must be 1-64 characters of letters, digits, hyphen or underscore"
+            )
+        return v
 
     @field_validator("origin_id", "destination_id", "seat")
     @classmethod

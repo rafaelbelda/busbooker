@@ -46,8 +46,20 @@ class ReservationStore:
         self._lock = asyncio.Lock()
         self._db = db
 
-    async def add(self, record: ReservationRecord) -> ReservationRecord:
+    async def add(
+        self, record: ReservationRecord, *, replace: bool = False
+    ) -> Optional[ReservationRecord]:
+        """Insert a reservation. Returns ``None`` if the id is already taken.
+
+        Clients may supply their own id, so a duplicate is reachable from the public
+        API. Silently overwriting was the old behaviour and it orphaned state: the
+        previous record's ``relock_<id>`` job keeps running against the *new*
+        record's route, re-locking a seat nobody asked for. Rejecting is race-free
+        because the check and the insert share this lock.
+        """
         async with self._lock:
+            if not replace and record.id in self._items:
+                return None
             self._items[record.id] = record
             if self._db is not None:
                 self._db.upsert(record)

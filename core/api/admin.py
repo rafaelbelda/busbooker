@@ -43,8 +43,16 @@ def require_admin(
     Every admin access attempt is logged and attributable: failures at WARNING
     (so brute-force / probing is visible in the log), successes at INFO.
     """
-    user_ok = secrets.compare_digest(credentials.username, _ADMIN_USER)
-    pass_ok = secrets.compare_digest(credentials.password, settings.admin_password or "")
+    # Compare as BYTES. secrets.compare_digest accepts str only when both operands
+    # are ASCII-only; a non-ASCII username or password raised TypeError, which
+    # escaped as a 500 with a traceback instead of a 401 — so probing with non-ASCII
+    # input bypassed the "[admin] AUTH FAILURE" line and left no auth-log trail.
+    user_ok = secrets.compare_digest(
+        credentials.username.encode("utf-8"), _ADMIN_USER.encode("utf-8")
+    )
+    pass_ok = secrets.compare_digest(
+        credentials.password.encode("utf-8"), (settings.admin_password or "").encode("utf-8")
+    )
     if not (user_ok and pass_ok):
         log.warning(
             f"[admin] AUTH FAILURE user={credentials.username!r} "

@@ -43,6 +43,12 @@ def retry(fn: Callable[[], T], label: str, attempts: Optional[int] = None) -> T:
             return fn()
         except Exception as exc:
             last_error = exc
+            if i == attempts - 1:
+                # No attempt left to back off *for*. The old code slept here anyway,
+                # adding 1-20 s of pure latency to every exhausted retry before
+                # raising — and with MAX_RETRIES=1 that was the only thing it did.
+                log.warning(f"[{label}] attempt {i + 1}/{attempts} failed: {exc!r}")
+                break
             wait = backoff(i)
             log.warning(f"[{label}] attempt {i + 1}/{attempts}: {exc!r} — retry in {wait:.1f}s")
             time.sleep(wait)

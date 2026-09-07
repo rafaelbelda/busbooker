@@ -36,7 +36,6 @@ All config is in `.env` (never committed). Key variables:
 - `RELOCK_STOP_MINUTES_BEFORE_DEPARTURE` — stop re-locking this long before departure
   (default 15). The provider delists a trip some minutes before it leaves, so a re-lock
   landing after that point cannot succeed.
-- `WAIT_AFTER_LOCK` — seconds to hold open checkout tab before confirming (default 60)
 - `RATE_LIMIT_PER_MIN` — `0` disables per-IP rate limiting
 
 `core/config.py` is a Pydantic Settings class — all env vars are validated at import time.

@@ -32,7 +32,8 @@ The service exposes a small HTTP API around a 7-step browser flow:
 4. Check seat availability (`disponivel`) in the seat map.
 5. Lock the seat — UI click (SVG/DOM/aria + coordinate mapping) with a direct
    `LockSeat-LockSeat` POST fallback.
-6. Navigate to `Checkout-Begin` and hold the lock for `WAIT_AFTER_LOCK` seconds.
+6. Navigate to `Checkout-Begin` (best-effort; the LockSeat `seatUUID` is the
+   authoritative proof the seat is held).
 7. Confirm the lock (URL → page content → `BusDetails` re-fetch).
 
 Exit codes returned by the flow map onto HTTP status codes:
@@ -135,7 +136,6 @@ root:
 # .env
 ADMIN_PASSWORD=change-me      # required, no default
 HEADLESS=false
-WAIT_AFTER_LOCK=60
 SCHEDULER_INTERVAL=20         # minutes between a reservation's re-lock attempts
 ```
 
@@ -323,8 +323,7 @@ departure and seat are always supplied per request.
 | `USER_DATA_DIR`      | `./browser_profile`         | Persistent Chromium profile directory.                   |
 | `HEADLESS`           | `false`                     | Run Chromium headless (skips xvfb).                      |
 | `ADMIN_PASSWORD`     | **(required, no default)**  | HTTP Basic password for `/admin/*` (username `admin`). Startup fails if unset. |
-| `MAX_RETRIES`        | `1`                         | Attempts for retry-wrapped browser steps.                |
-| `WAIT_AFTER_LOCK`    | `60`                        | Seconds the lock is held before confirmation.            |
+| `MAX_RETRIES`        | `2`                         | Attempts (not *re*-tries) for retry-wrapped browser steps. |
 | `SCHEDULER_INTERVAL` | `20`                        | Minutes between a reservation's re-lock attempts.        |
 | `RELOCK_STOP_MINUTES_BEFORE_DEPARTURE` | `15`      | Stop re-locking this many minutes before departure. The provider delists a trip shortly before it leaves, so a later re-lock cannot succeed. |
 | `RESERVATION_DB`     | `core/data/reservations.db` | SQLite file for durable reservations. `:memory:` disables persistence. |

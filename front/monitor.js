@@ -35,9 +35,15 @@
       case "pending": return ["WORKING", "Lock in progress,  driving the provider browser…"];
       case "locked": return ["NOMINAL", `Seat held. Auto re-locking to keep it until departure.`];
       case "failed":
-        return rec.exit_code === 2
-          ? ["HARD FAULT", "Unrecoverable error,  re-lock cycle stopped. Re-reserve to retry."]
-          : ["SOFT FAULT", "Last re-lock failed,  scheduler will retry next interval."];
+        if (rec.exit_code === 2)
+          return ["HARD FAULT", "Unrecoverable error,  re-lock cycle stopped. Re-reserve to retry."];
+        // A re-lock job only exists once a seat has locked at least once, which is
+        // also the only time departure_datetime gets set. Without it the INITIAL
+        // lock failed and nothing is scheduled — saying "the scheduler will retry"
+        // there promised a retry that was never going to come.
+        return rec.departure_datetime
+          ? ["SOFT FAULT", "Last re-lock failed,  scheduler will retry next interval."]
+          : ["NOT LOCKED", "Initial lock failed,  nothing scheduled. Pick another seat and reserve again."];
       case "expired":
         // Two distinct causes, and the difference matters to the user: exit 3 means
         // the provider pulled the trip (nothing was wrong with the seat or the hold),

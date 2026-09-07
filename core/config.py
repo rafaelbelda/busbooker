@@ -43,8 +43,11 @@ class Settings(BaseSettings):
     admin_password: Optional[str] = None
 
     # ---- flow tuning ----
-    max_retries: int = 1
-    wait_after_lock: int = 60  # seconds the lock is held before confirmation
+    # Attempts (not *re*-tries) for retry-wrapped browser steps. Was 1, which made
+    # the retry wrapper a no-op for open_search_page and proceed_to_checkout: a
+    # transient page-load failure went straight to exit 2, costing a profile reset
+    # and a whole second flow. One in-place retry is far cheaper than that.
+    max_retries: int = 2
 
     # ---- scheduler ----
     scheduler_interval: int = 20  # minutes

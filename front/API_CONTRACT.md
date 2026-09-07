@@ -126,6 +126,7 @@ Status codes and exact body shapes. `→` denotes the success body.
 | POST | `/search` | resolve trips for a pasted mobifacil URL | 200 → `SearchResponse` | ~2 s; 422 on bad URL |
 | POST | `/reservations` | lock a seat now + start re-lock cycle | **201** → `ReservationRecord` | browser-driven; see status semantics below |
 | GET | `/reservations/{id}` | reservation detail | 200 → `ReservationRecord` | 404 if unknown |
+| GET | `/reservations/{id}/log` | that reservation's flow log | 200 → `{reservation_id, exists, truncated, size, content}` | the id is the capability; `tail_kb` (1–4096, default 256) caps the response; 404 if unknown |
 | DELETE | `/reservations/{id}` | forget reservation + stop its re-lock | 200 → `MessageResponse` | 404 if unknown |
 | GET | `/scheduler/status` | scheduler + per-reservation jobs | 200 → `SchedulerStatusResponse` | fast |
 
@@ -291,11 +292,14 @@ next fire time.)
 ```
 
 ### Request bodies
-- `POST /reservations` — `ReservationRequest`, **all fields required**, unknown
-  fields **rejected** (`extra: forbid` → 422). Required keys exactly:
-  `origin_id`, `destination_id`, `date` (`yyyy-mm-dd`), `departure` (`HH:MM`),
-  `seat` (string). There are no server-side route defaults — omitting any field
-  is a 422.
+- `POST /reservations` — `ReservationRequest`. Unknown fields **rejected**
+  (`extra: forbid` → 422). Required keys exactly: `origin_id`, `destination_id`,
+  `date` (`yyyy-mm-dd`), `departure` (`HH:MM`), `seat` (string). There are no
+  server-side route defaults — omitting any of those is a 422.
+  **Optional:** `id` — a client-generated id so the UI can open the monitor without
+  waiting for the flow. Must match `^[A-Za-z0-9_-]{1,64}$` (422 otherwise) and must
+  not already exist (**409** `"reservation id already exists"`). Omit it and the
+  server generates one.
 - `POST /search` — `{ "url": "<full mobifacil passagem-de-onibus URL>" }`. Paste
   the URL **exactly** as copied (it contains `dd-mm-yyyy` date + `origin`/
   `destination`/`isStudent`/`isPCD` query params; the backend parses it). Only

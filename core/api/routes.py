@@ -230,7 +230,14 @@ async def create_reservation(
         created_at=now,
         updated_at=now,
     )
-    await store.add(record)
+    if await store.add(record) is None:
+        # Client-supplied id that is already in use. Overwriting would leave the
+        # existing reservation's re-lock job running against a different route.
+        log.warning(
+            f"[audit] reservation create REJECTED id={record.id} — id already in use "
+            f"{_client(request)}"
+        )
+        raise HTTPException(status_code=409, detail="reservation id already exists")
     log.info(
         f"[audit] reservation create id={record.id} "
         f"route={params.origin_id}->{params.destination_id} date={params.date} "

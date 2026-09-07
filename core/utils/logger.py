@@ -8,7 +8,6 @@ from __future__ import annotations
 
 import contextvars
 import logging
-import re
 import sys
 from contextlib import contextmanager
 from logging.handlers import RotatingFileHandler
@@ -16,6 +15,7 @@ from pathlib import Path
 from typing import Iterator, Optional
 
 from ..config import settings
+from ..models.schemas import SAFE_ID_RE
 
 _LOGGER_NAME = "busbooker"
 _FORMAT = "%(asctime)s [%(levelname)s] %(name)s — %(message)s"
@@ -116,19 +116,21 @@ def reservation_log_path(reservation_id: str) -> Path:
     created. On subsequent calls (relocks) the existing dated file is found via
     glob so all runs for the same reservation share one file regardless of
     date rollover.
+
+    Raises ``ValueError`` for an id that is unsafe as a filename component. Ids are
+    already validated at the API boundary (``ReservationRequest.id``); this is the
+    filesystem-side guard, so a future caller that bypasses the API cannot direct a
+    log write outside ``reservation_log_dir``.
     """
     from datetime import date as _date
+    if not reservation_id or not SAFE_ID_RE.match(reservation_id):
+        raise ValueError(f"unsafe reservation id for a log filename: {reservation_id!r}")
     log_dir = Path(settings.reservation_log_dir)
     if log_dir.is_dir():
         existing = sorted(log_dir.glob(f"????-??-??-{reservation_id}.log"))
         if existing:
             return existing[-1]
     return log_dir / f"{_date.today().strftime('%Y-%m-%d')}-{reservation_id}.log"
-
-
-# Reservation ids are short hex/uuid fragments; clients may supply their own.
-# Validate before using one as a filename so a crafted id can't escape the dir.
-_SAFE_ID = re.compile(r"^[A-Za-z0-9_-]{1,64}$")
 
 
 def read_reservation_log(reservation_id: str, tail_kb: int = 256) -> Optional[dict]:
@@ -139,7 +141,7 @@ def read_reservation_log(reservation_id: str, tail_kb: int = 256) -> Optional[di
     callers should treat that as a 404. A missing file is not an error: the dict
     is returned with ``exists: False`` and empty content (the flow hasn't run yet).
     """
-    if not reservation_id or not _SAFE_ID.match(reservation_id):
+    if not reservation_id or not SAFE_ID_RE.match(reservation_id):
         return None
     path = reservation_log_path(reservation_id)
     base = Path(settings.reservation_log_dir).resolve()
@@ -176,7 +178,15 @@ def reservation_log(reservation_id: Optional[str]) -> Iterator[Optional[Path]]:
         yield None
         return
 
-    path = reservation_log_path(reservation_id)
+    try:
+        path = reservation_log_path(reservation_id)
+    except ValueError as exc:
+        # Should be unreachable: ids are validated at the API boundary. If it ever
+        # fires, losing the per-reservation log is far better than failing the
+        # booking — log loudly and carry on with the process-wide log only.
+        log.error(f"[logger] per-reservation log disabled: {exc}")
+        yield None
+        return
     path.parent.mkdir(parents=True, exist_ok=True)
     handler = logging.FileHandler(path, mode="a", encoding="utf-8")
     handler.setLevel(logging.DEBUG)
