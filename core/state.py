@@ -9,13 +9,14 @@ from __future__ import annotations
 
 import asyncio
 import time
-from datetime import datetime, timezone
+from concurrent.futures import ThreadPoolExecutor
+from datetime import datetime, timedelta, timezone
 from typing import Optional
 
 from .config import settings
 from .models.schemas import ReservationRecord, ReservationStatus
 from .persistence import ReservationDB
-from .utils.logger import log
+from .utils.logger import log, reservation_log_path
 from .utils.time_utils import relock_cutoff
 
 # Monotonic process start, used for the /health uptime figure.
@@ -29,9 +30,50 @@ _TERMINAL_STATUSES = (ReservationStatus.cancelled, ReservationStatus.expired)
 # Serialises every browser flow (single shared persistent profile / single worker).
 FLOW_LOCK: asyncio.Lock = asyncio.Lock()
 
+# Browser flows get their OWN single-thread executor rather than the interpreter's
+# default pool. Two reasons:
+#   * Isolation — /seats and /search used to share the default pool with 60-second
+#     browser flows, so a few slow flows could starve the cheap read endpoints.
+#   * Containment — if a flow ever overruns its timeout, the thread cannot be
+#     killed (Python offers no way). With a single worker the runaway thread at
+#     least cannot run *concurrently* with the next flow against the same
+#     Chromium profile; the next flow queues behind it instead of corrupting it.
+FLOW_EXECUTOR = ThreadPoolExecutor(max_workers=1, thread_name_prefix="busbooker-flow")
+
+# (reservation_id, monotonic start) for the flow currently running, else None.
+# Exposed via /health so a wedged flow is visible instead of silently invisible.
+_current_flow: Optional[tuple[Optional[str], float]] = None
+
+
+def set_current_flow(reservation_id: Optional[str]) -> None:
+    global _current_flow
+    _current_flow = (reservation_id, time.monotonic())
+
+
+def clear_current_flow() -> None:
+    global _current_flow
+    _current_flow = None
+
+
+def current_flow_info() -> Optional[dict]:
+    """``{reservation_id, running_seconds}`` for the in-flight flow, else ``None``."""
+    if _current_flow is None:
+        return None
+    rid, started = _current_flow
+    return {"reservation_id": rid, "running_seconds": round(time.monotonic() - started, 1)}
+
 
 def _now() -> datetime:
     return datetime.now(timezone.utc)
+
+
+def _delete_reservation_log(reservation_id: str) -> None:
+    """Best-effort removal of a purged reservation's flow log."""
+    try:
+        path = reservation_log_path(reservation_id)
+        path.unlink(missing_ok=True)
+    except (ValueError, OSError) as exc:
+        log.warning(f"[persistence] could not remove log for {reservation_id}: {exc!r}")
 
 
 class ReservationStore:
@@ -144,6 +186,40 @@ class ReservationStore:
                     self._db.upsert(rec)
                 self._items[rec.id] = rec
         log.info(f"[persistence] restored {len(records)} reservation(s) from disk")
+
+    async def purge_old(self, retention_days: int) -> int:
+        """Delete reservations whose departure passed more than N days ago.
+
+        Nothing pruned the table or the per-reservation log directory before, so
+        both grew forever — and every ``/admin/stats``, ``/admin/reservations`` and
+        restart walked the whole set. Only records with a known, safely-past
+        departure are removed; anything still live or without a departure time is
+        left alone. ``retention_days <= 0`` disables the sweep.
+        """
+        if retention_days <= 0:
+            return 0
+        cutoff = _now() - timedelta(days=retention_days)
+        async with self._lock:
+            stale = [
+                r.id for r in self._items.values()
+                if r.departure_datetime is not None and r.departure_datetime < cutoff
+            ]
+            for rid in stale:
+                self._items.pop(rid, None)
+                if self._db is not None:
+                    self._db.delete(rid)
+        for rid in stale:
+            _delete_reservation_log(rid)
+        if stale:
+            log.info(
+                f"[persistence] purged {len(stale)} reservation(s) older than "
+                f"{retention_days} day(s)"
+            )
+        return len(stale)
+
+    def close(self) -> None:
+        if self._db is not None:
+            self._db.close()
 
 
 # Single shared store instance, durable via SQLite.

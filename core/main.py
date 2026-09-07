@@ -71,12 +71,16 @@ async def lifespan(app: FastAPI):
     # Restore persisted reservations, then re-arm their re-lock jobs so a restart
     # doesn't silently drop seats that are still being held.
     await store.load()
+    # Drop long-departed reservations and their logs before rehydrating, so the
+    # sweep runs exactly once per start and nothing accumulates forever.
+    await store.purge_old(settings.retention_days)
     await rehydrate_relocks()
     try:
         yield
     finally:
         # Graceful shutdown — don't block the event loop on in-flight jobs.
         shutdown_scheduler()
+        store.close()   # ReservationDB.close() existed but was never called
         log.info("[lifespan] service stopped")
 
 

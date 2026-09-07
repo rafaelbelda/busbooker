@@ -2,12 +2,15 @@
 Lightweight, dependency-free abuse protection for the browser-driven endpoints
 (/seats, /search, /reservations).
 
-Two independent guards, each a no-op when its setting is 0:
+Two guards, each a no-op when its setting is 0:
 
-* **Per-client-IP fixed-window rate limit** (fairness / abuse) → 429.
-* **Global queue cap** on concurrent browser-bound requests (survival) → 503,
-  so requests fail fast instead of piling up behind the single browser and
-  hammering the upstream site into a ban.
+* ``http_guard`` — per-client-IP fixed-window rate limit (fairness / abuse) → 429.
+  Applied to ``/seats`` and ``/search``.
+* ``browser_guard`` — that same rate limit **plus** a global cap on concurrent
+  browser-bound requests (survival) → 503, so requests fail fast instead of piling
+  up behind the single browser and hammering the upstream site into a ban. Applied
+  to ``/reservations`` only: the queue cap exists for the browser, and letting a
+  burst of slow reservations 503 the cheap seat-map reads would be wrong.
 
 Single worker, single event loop: the counters are only touched between awaits,
 so plain ``int``/``dict`` access is atomic here and needs no locking. Client IPs
@@ -48,15 +51,8 @@ def _rate_limited(ip: str, limit: int) -> bool:
     return False
 
 
-async def browser_guard(request: Request) -> AsyncIterator[None]:
-    """FastAPI dependency for browser-driven endpoints.
-
-    Apply with ``dependencies=[Depends(browser_guard)]``. Uses a ``yield`` so the
-    in-flight counter is released after the response, whatever the outcome.
-    """
-    global _in_flight
+def _enforce_rate_limit(request: Request) -> None:
     info = getattr(request.state, "client", None) or client_info(request)
-
     limit = settings.rate_limit_per_min
     if limit > 0 and _rate_limited(info.ip, limit):
         raise HTTPException(
@@ -64,6 +60,29 @@ async def browser_guard(request: Request) -> AsyncIterator[None]:
             detail="rate limit exceeded — slow down",
             headers={"Retry-After": "60"},
         )
+
+
+async def http_guard(request: Request) -> None:
+    """Rate limit only — for ``/seats`` and ``/search``.
+
+    These hit the provider over plain HTTP and finish in seconds, so they need
+    fairness protection but must NOT consume the browser queue: a burst of eight
+    slow reservations would otherwise 503 every seat-map read. They were
+    previously unguarded entirely, despite this module's docstring claiming
+    otherwise, which made them the *easiest* endpoints to abuse — an unbounded
+    loop over ``/seats`` is unbounded fan-out at mobifacil.
+    """
+    _enforce_rate_limit(request)
+
+
+async def browser_guard(request: Request) -> AsyncIterator[None]:
+    """Rate limit **and** the browser queue cap — for ``/reservations``.
+
+    Apply with ``dependencies=[Depends(browser_guard)]``. Uses a ``yield`` so the
+    in-flight counter is released after the response, whatever the outcome.
+    """
+    global _in_flight
+    _enforce_rate_limit(request)
 
     cap = settings.max_flow_queue
     if cap > 0 and _in_flight >= cap:

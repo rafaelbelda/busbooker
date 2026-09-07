@@ -124,7 +124,17 @@ def _parse_lsservicos(html_content: str) -> list[dict]:
 # ─────────────────────────────────────────────────────────────────
 
 def _posZ_from(seat: dict, fallback: int) -> float:
-    """Read the explicit z/posZ floor field, or fall back to the empty-row counter."""
+    """Floor index for a seat.
+
+    The empty-row divider count (``fallback``) is AUTHORITATIVE — it is mobifacil's
+    own rule for ``hasSecondFloor`` (``seatMap.some(row => row.length === 0)``) and
+    the one ``build_seat_decks`` uses. The per-seat ``z``/``posZ`` field is only
+    consulted when the map has no divider at all, because production data carries
+    ``z: "0"`` on every seat *including the upper deck*: trusting it collapsed a
+    double-decker into one floor here while the deck grid correctly showed two.
+    """
+    if fallback:
+        return float(fallback)
     for k in ("z", "posZ"):
         v = seat.get(k)
         if v not in (None, ""):

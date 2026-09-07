@@ -142,6 +142,9 @@ class ReservationRecord(BaseModel):
     arrival_datetime: Optional[datetime] = None
     # Incremented on each successful re-lock cycle.
     relock_count: int = 0
+    # Soft failures (exit 1) since the last success. Drives the re-lock backoff
+    # ladder so a permanently-taken seat stops being retried every 5 minutes.
+    consecutive_failures: int = 0
 
     @computed_field  # type: ignore[prop-decorator]
     @property
@@ -203,6 +206,10 @@ class HealthResponse(BaseModel):
     status: str
     uptime_seconds: float
     scheduler_running: bool
+    # The browser flow currently running, as {reservation_id, running_seconds},
+    # or null when idle. A flow stuck far past FLOW_TIMEOUT_SECONDS used to be
+    # completely invisible while it blocked every reservation and re-lock.
+    current_flow: Optional[dict] = None
 
 
 class RelockJobInfo(BaseModel):

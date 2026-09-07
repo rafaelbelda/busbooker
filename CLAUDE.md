@@ -36,7 +36,14 @@ All config is in `.env` (never committed). Key variables:
 - `RELOCK_STOP_MINUTES_BEFORE_DEPARTURE` — stop re-locking this long before departure
   (default 15). The provider delists a trip some minutes before it leaves, so a re-lock
   landing after that point cannot succeed.
-- `RATE_LIMIT_PER_MIN` — `0` disables per-IP rate limiting
+- `RATE_LIMIT_PER_MIN` — `0` disables per-IP rate limiting (applies to `/seats`,
+  `/search` and `/reservations`)
+- `FLOW_TIMEOUT_SECONDS` — hard budget for one browser flow (default 240); on expiry
+  the flow is abandoned as exit 2 so a hung Chromium cannot wedge the service
+- `RETENTION_DAYS` — delete reservations and their logs this long after departure
+  (default 7, `0` disables)
+
+`.env.example` documents every setting; copy it to `.env` to start.
 
 `core/config.py` is a Pydantic Settings class — all env vars are validated at import time.
 
@@ -121,7 +128,21 @@ trip back.
 
 ## Manual Test Scripts
 
-`tests/` contains standalone scripts (not a test framework):
-- `test_direct_requests.py` — direct API calls against a running server
+`tests/` holds two different things.
+
+**Automated tests** (`pytest`, hermetic — no browser, no network, no real
+reservations). Run them with:
+
+```bash
+pytest
+```
+
+`tests/conftest.py` pins `ADMIN_PASSWORD` and `RESERVATION_DB=:memory:` so a real
+`.env` is never picked up. **Never** point a test at mobifacil: a real flow run
+books an actual seat.
+
+**Manual scripts** (named `manual_*` so pytest does not collect them — they hit
+live endpoints and must be run deliberately):
+- `manual_direct_requests.py` — direct API calls against a running server
 - `capture_lockseat.py` — Playwright debugging helper
 - `serve_front.py` — local static file server for frontend-only development

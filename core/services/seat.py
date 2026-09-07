@@ -39,7 +39,17 @@ def _iter_seats(seat_map: list):
 
 
 def _posZ_from(seat: dict, fallback: int) -> float:
-    """Read the explicit z/posZ floor field from a seat dict, or use the fallback."""
+    """Floor index for a seat.
+
+    The empty-row divider count (``fallback``) is AUTHORITATIVE — it is mobifacil's
+    own rule for ``hasSecondFloor`` (``seatMap.some(row => row.length === 0)``) and
+    the one ``build_seat_decks`` uses. The per-seat ``z``/``posZ`` field is only
+    consulted when the map has no divider at all, because production data carries
+    ``z: "0"`` on every seat *including the upper deck*: trusting it collapsed a
+    double-decker into one floor here while the deck grid correctly showed two.
+    """
+    if fallback:
+        return float(fallback)
     for k in ("z", "posZ"):
         v = seat.get(k)
         if v not in (None, ""):
@@ -279,7 +289,9 @@ def lock_seat_api(page: Page, trip: dict, params: RouteParams) -> Optional[str]:
                 # malformed payload is a code bug, not a busy seat. Log loudly and
                 # stop (return None → soft fail) instead of resetting the browser.
                 log.error("[step 4] Server JSON parse error — malformed payload (bug)")
-                log.error(f"[step 4] Full payload sent: {json.dumps(payload)}")
+                # Capped: the payload embeds the ENTIRE seat map, so an uncapped
+                # dump wrote ~100 KB into the log on every occurrence.
+                log.error(f"[step 4] Payload sent (truncated): {json.dumps(payload)[:2000]}")
                 return None
             # Business decline (seat taken / not lockable). Mirrors the frontend,
             # which just surfaces o.error. Don't retry or reset the browser — report
@@ -295,6 +307,24 @@ def lock_seat_api(page: Page, trip: dict, params: RouteParams) -> Optional[str]:
             log.warning("[step 4] LockSeat success but no seatUUID — trusting success flag")
             seat_uuid = "locked"
         log.info(f"[step 4] LockSeat success — uuid={seat_uuid}")
+
+        # Basket state, logged so it stops being guesswork. Production logs showed
+        # these climbing (a FIRST lock reporting quantityTotal=2, later 4/4), which
+        # suggests the single persistent Chromium profile gives EVERY reservation
+        # one shared cart at the provider — so cancelling never removes a seat from
+        # it, and a basket cap would surface as a bogus "seat unavailable". Observe
+        # before acting: the field semantics are inferred from a handful of samples.
+        qty, count = data.get("quantityTotal"), data.get("count")
+        if qty is not None or count is not None:
+            log.info(
+                f"[step 4] provider basket: quantityTotal={qty} count={count} "
+                f"total={data.get('total')}"
+            )
+            if isinstance(qty, int) and qty > 1:
+                log.warning(
+                    f"[step 4] provider basket holds {qty} seats — expected 1 per "
+                    "reservation; seats from other reservations may be accumulating"
+                )
         return seat_uuid
 
     return retry(_post, "api_seat_lock", attempts=3)

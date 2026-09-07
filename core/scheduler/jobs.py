@@ -16,8 +16,6 @@ a time.
 """
 from __future__ import annotations
 
-import asyncio
-import functools
 from datetime import datetime, timedelta, timezone
 from typing import Optional
 
@@ -27,8 +25,8 @@ from apscheduler.triggers.interval import IntervalTrigger
 
 from ..config import settings
 from ..models.schemas import ReservationStatus
-from ..services.flow import resolve_route_params, run_flow
-from ..state import FLOW_LOCK, store
+from ..services.flow import resolve_route_params, run_flow_guarded
+from ..state import store
 from ..utils.logger import log
 from ..utils.time_utils import relock_cutoff
 
@@ -48,6 +46,29 @@ scheduler = AsyncIOScheduler(timezone="America/Sao_Paulo")
 
 def _relock_job_id(reservation_id: str) -> str:
     return f"{_RELOCK_PREFIX}{reservation_id}"
+
+
+# First retry delay after a soft fail, in minutes. Doubles per consecutive failure
+# up to SCHEDULER_INTERVAL.
+_SOFT_FAIL_BASE_MINUTES = 5
+
+
+def _soft_fail_delay(consecutive_failures: int) -> int:
+    """Minutes to wait before the next attempt after ``n`` failures in a row.
+
+    5 → 10 → 20 … capped at ``SCHEDULER_INTERVAL``.
+
+    The old code hard-coded 5 minutes and rescheduled to 5 again on *every*
+    consecutive failure, so a seat taken by someone else produced a permanent
+    5-minute flow loop — up to ~570 full browser flows across a 48-hour window,
+    each launching Chromium and loading the provider's search page. That is the
+    most likely way this service gets its IP banned, and it engaged exactly when
+    things were already going wrong. Backing off returns to the normal cadence
+    instead of hammering.
+    """
+    n = max(1, consecutive_failures)
+    delay = _SOFT_FAIL_BASE_MINUTES * (2 ** (n - 1))
+    return int(min(delay, settings.scheduler_interval))
 
 
 # ─────────────────────────────────────────────────────────────────
@@ -102,12 +123,9 @@ async def _relock_job(reservation_id: str) -> None:
         seat=record.seat,
     )
 
-    # (3) Run the flow off the loop, serialised behind FLOW_LOCK.
+    # (3) Run the flow — serialised, time-bounded and observable.
     try:
-        loop = asyncio.get_running_loop()
-        async with FLOW_LOCK:
-            _flow = functools.partial(run_flow, params, reservation_id, True)
-            code, _trip = await loop.run_in_executor(None, _flow)
+        code, _trip = await run_flow_guarded(params, reservation_id, is_relock=True)
     except Exception as exc:
         # (7) Unexpected error — log with traceback, keep the job.
         log.exception(f"scheduler: re-lock #{n} raised for {reservation_id}: {exc!r}")
@@ -122,6 +140,7 @@ async def _relock_job(reservation_id: str) -> None:
             exit_code=0,
             error_msg=None,
             relock_count=n,
+            consecutive_failures=0,   # success resets the backoff ladder
         )
         if updated is None:
             # Cancelled/expired/deleted while this re-lock ran — don't resurrect.
@@ -143,6 +162,7 @@ async def _relock_job(reservation_id: str) -> None:
             status=ReservationStatus.failed,
             exit_code=1,
             error_msg="seat unavailable or lock failed",
+            consecutive_failures=record.consecutive_failures + 1,
         )
         if updated is None:
             log.info(
@@ -151,7 +171,7 @@ async def _relock_job(reservation_id: str) -> None:
             )
             cancel_relock(reservation_id)
             return
-        retry_in = 5
+        retry_in = _soft_fail_delay(updated.consecutive_failures)
         try:
             scheduler.reschedule_job(
                 _relock_job_id(reservation_id),
@@ -166,8 +186,9 @@ async def _relock_job(reservation_id: str) -> None:
                 ),
             )
             log.warning(
-                f"scheduler: re-lock #{n} seat {record.seat} soft-fail — "
-                f"retrying in {retry_in} min, then every {settings.scheduler_interval} min"
+                f"scheduler: re-lock #{n} seat {record.seat} soft-fail "
+                f"(#{updated.consecutive_failures} in a row) — retrying in {retry_in} min, "
+                f"then every {settings.scheduler_interval} min"
             )
         except JobLookupError:
             log.warning(f"scheduler: re-lock #{n} seat {record.seat} soft-fail — job gone, cannot reschedule")

@@ -35,13 +35,13 @@ from ..services.flow import (
     fetch_seat_map,
     resolve_route_params,
     resolve_search_params,
-    run_flow,
+    run_flow_guarded,
     search_trips,
 )
-from ..state import FLOW_LOCK, store, uptime_seconds
+from ..state import current_flow_info, store, uptime_seconds
 from ..utils.logger import log, read_reservation_log
 from ..utils.net import client_info
-from ..utils.ratelimit import browser_guard
+from ..utils.ratelimit import browser_guard, http_guard
 from ..utils.time_utils import compute_arrival_datetime, compute_departure_datetime
 
 router = APIRouter()
@@ -80,13 +80,15 @@ async def health() -> HealthResponse:
         status="ok",
         uptime_seconds=round(uptime_seconds(), 2),
         scheduler_running=scheduler_status()["running"],
+        current_flow=current_flow_info(),
     )
 
 
 # ─────────────────────────────────────────────────────────────────
 # Live seat map
 # ─────────────────────────────────────────────────────────────────
-@router.get("/seats", response_model=SeatsResponse)
+@router.get("/seats", response_model=SeatsResponse,
+            dependencies=[Depends(http_guard)])
 async def get_seats(
     origin_id: str = Query(),
     destination_id: str = Query(),
@@ -173,7 +175,8 @@ def _parse_search_url(url: str) -> dict:
     }
 
 
-@router.post("/search", response_model=SearchResponse)
+@router.post("/search", response_model=SearchResponse,
+             dependencies=[Depends(http_guard)])
 async def search(req: SearchRequest) -> SearchResponse:
     parsed = _parse_search_url(req.url)
     params = resolve_search_params(parsed["origin"], parsed["destination"], parsed["date"], req.url)
@@ -244,10 +247,9 @@ async def create_reservation(
         f"departure={params.departure} seat={params.seat} {_client(request)}"
     )
 
-    loop = asyncio.get_running_loop()
     try:
-        async with FLOW_LOCK:  # run_flow is blocking sync Playwright → executor
-            code, trip = await loop.run_in_executor(None, run_flow, params, record.id)
+        # Serialised, time-bounded and observable — see run_flow_guarded.
+        code, trip = await run_flow_guarded(params, record.id)
     except Exception as exc:
         # Full detail to the log; the client gets a generic message (no internals).
         log.exception(f"[/reservations] id={record.id} flow raised: {exc!r}")

@@ -49,8 +49,19 @@ class Settings(BaseSettings):
     # and a whole second flow. One in-place retry is far cheaper than that.
     max_retries: int = 2
 
+    # Hard wall-clock budget for one browser flow. Playwright's per-operation
+    # timeouts do not compose into a flow-level bound, so without this a hung
+    # Chromium held FLOW_LOCK forever and wedged every reservation AND every
+    # re-lock until a restart. Generous: a healthy flow is ~30-60 s.
+    flow_timeout_seconds: int = 240
+
     # ---- scheduler ----
-    scheduler_interval: int = 20  # minutes
+    # Must stay comfortably BELOW the provider's seat-hold TTL, or each cycle
+    # re-takes a seat that has already been publicly bookable for a while. Logs
+    # showed the hold lapsing at 20.6-21.6 min with the interval at 20, so the
+    # seat was exposed on every cycle. 14 ≈ 70% of the observed TTL; revisit once
+    # the "seat read as FREE at re-lock" warning has produced real data.
+    scheduler_interval: int = 14  # minutes
     # Stop re-locking this many minutes BEFORE departure. mobifacil delists a trip
     # some minutes before it leaves (observed: still listed at T-22min, gone by
     # T-90s), and a re-lock that lands after delisting cannot succeed — it used to
@@ -62,6 +73,10 @@ class Settings(BaseSettings):
     # SQLite file holding reservations so they (and their re-lock jobs) survive a
     # restart. Use ":memory:" to disable durability (e.g. in tests).
     reservation_db: str = "core/data/reservations.db"
+    # Delete reservations (and their per-reservation log files) this many days
+    # after departure. Nothing pruned them before, so the table and the log
+    # directory grew without bound. 0 disables the sweep.
+    retention_days: int = 7
 
     # ---- abuse protection (matters once the browser endpoints face the public) ----
     # Per-client-IP request cap per minute on the browser-driven endpoints

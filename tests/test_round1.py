@@ -26,22 +26,6 @@ def _now():
     return datetime.now(timezone.utc)
 
 
-@pytest.fixture(scope="module")
-def client():
-    """TestClient WITHOUT the lifespan.
-
-    The app's scheduler is a module-level AsyncIOScheduler that binds to whichever
-    event loop starts it, so running the lifespan more than once per process leaves
-    it pointing at a closed loop. None of these tests need the scheduler or the
-    startup restore — they exercise routing, validation and auth — so we skip
-    startup entirely rather than working around it.
-    """
-    from fastapi.testclient import TestClient
-
-    from core.main import app
-    return TestClient(app)
-
-
 def _record(rid="aaaa1111", **kw) -> ReservationRecord:
     base = dict(
         id=rid, origin_id="19052", destination_id="-3", date="2026-07-25",
@@ -121,7 +105,10 @@ def test_store_rejects_duplicate_id():
 def test_post_reservations_rejects_a_duplicate_id_with_409(monkeypatch, client):
     from core.api import routes as routes_mod
 
-    monkeypatch.setattr(routes_mod, "run_flow", lambda params, rid: (0, {"arrivalHour": ""}))
+    async def _flow(params, rid):
+        return (0, {"arrivalHour": ""})
+
+    monkeypatch.setattr(routes_mod, "run_flow_guarded", _flow)
     monkeypatch.setattr(routes_mod, "schedule_relock", lambda *a, **k: None)
 
     import zoneinfo

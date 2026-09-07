@@ -327,6 +327,8 @@ departure and seat are always supplied per request.
 | `SCHEDULER_INTERVAL` | `20`                        | Minutes between a reservation's re-lock attempts.        |
 | `RELOCK_STOP_MINUTES_BEFORE_DEPARTURE` | `15`      | Stop re-locking this many minutes before departure. The provider delists a trip shortly before it leaves, so a later re-lock cannot succeed. |
 | `RESERVATION_DB`     | `core/data/reservations.db` | SQLite file for durable reservations. `:memory:` disables persistence. |
+| `RETENTION_DAYS`     | `7`                         | Delete reservations + their logs this long after departure. `0` disables. |
+| `FLOW_TIMEOUT_SECONDS` | `240`                     | Hard budget for one browser flow; on expiry it is abandoned as exit 2. |
 | `RATE_LIMIT_PER_MIN` | `0` (disabled)              | Per-client-IP request cap/min on the browser endpoints (`/seats`, `/search`, `/reservations`). `0` = off. |
 | `MAX_FLOW_QUEUE`     | `8`                         | Max concurrent (queued + running) browser requests before new ones get a fast `503`. `0` = off. |
 | `TRUSTED_PROXIES`    | `""` (loopback only)        | Extra proxy IPs/CIDRs whose `X-Real-IP`/`X-Forwarded-For` are trusted for client-IP logging. Loopback is always trusted. |

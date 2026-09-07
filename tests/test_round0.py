@@ -302,14 +302,15 @@ def test_timings_record_a_step_that_raised():
 # ─────────────────────────────────────────────────────────────────
 # API level — exit 3 surfaces as 409 + expired, with no re-lock job
 # ─────────────────────────────────────────────────────────────────
-def test_post_reservations_maps_exit_3_to_expired(monkeypatch):
-    from fastapi.testclient import TestClient
-
+def test_post_reservations_maps_exit_3_to_expired(monkeypatch, client):
     from core.api import routes as routes_mod
-    from core.main import app
 
     scheduled = []
-    monkeypatch.setattr(routes_mod, "run_flow", lambda params, rid: (3, None))
+
+    async def _flow(params, rid):
+        return (3, None)
+
+    monkeypatch.setattr(routes_mod, "run_flow_guarded", _flow)
     monkeypatch.setattr(routes_mod, "schedule_relock", lambda *a, **k: scheduled.append(a))
 
     # A departure comfortably inside the 48 h window the endpoint enforces.
@@ -317,13 +318,12 @@ def test_post_reservations_maps_exit_3_to_expired(monkeypatch):
         __import__("zoneinfo").ZoneInfo("America/Sao_Paulo")
     ) + timedelta(hours=6)
 
-    with TestClient(app) as client:
-        r = client.post("/reservations", json={
-            "id": "t3st0003",
-            "origin_id": "19052", "destination_id": "-3",
-            "date": dep.strftime("%Y-%m-%d"), "departure": dep.strftime("%H:%M"),
-            "seat": "15",
-        })
+    r = client.post("/reservations", json={
+        "id": "t3st0003",
+        "origin_id": "19052", "destination_id": "-3",
+        "date": dep.strftime("%Y-%m-%d"), "departure": dep.strftime("%H:%M"),
+        "seat": "15",
+    })
 
     assert r.status_code == 409, r.text
     body = r.json()

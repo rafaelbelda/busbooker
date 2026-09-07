@@ -1,0 +1,10 @@
+# Development / test dependencies. Production installs core/requirements.txt only.
+#
+#   pip install -r core/requirements.txt -r requirements-dev.txt
+#   pytest
+#
+# The suite is hermetic: no Chromium, no network, no real reservations. It needs
+# no `playwright install` and no running server.
+-r core/requirements.txt
+
+pytest==8.3.4

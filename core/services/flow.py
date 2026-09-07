@@ -22,6 +22,8 @@ reservation's departure_datetime for the re-lock scheduler.
 """
 from __future__ import annotations
 
+import asyncio
+import functools
 import random
 import time
 from contextlib import contextmanager
@@ -31,6 +33,7 @@ from playwright.sync_api import Page, sync_playwright
 
 from ..config import settings
 from ..models.schemas import RouteParams, SeatInfo
+from ..state import FLOW_EXECUTOR, FLOW_LOCK, clear_current_flow, set_current_flow
 from ..utils.logger import log, reservation_log
 from .browser import (
     TelemetryWatcher,
@@ -284,6 +287,44 @@ def run_flow(
 
         log.info(f"[main] exit({code})")
         return code, trip
+
+
+async def run_flow_guarded(
+    params: RouteParams, reservation_id: str | None = None, is_relock: bool = False
+) -> tuple[int, dict | None]:
+    """Serialise, bound and observe one browser flow. The only way to run a flow.
+
+    Both callers (``POST /reservations`` and the re-lock job) previously inlined
+    this and neither bounded it, so a hung Chromium held ``FLOW_LOCK`` forever:
+    every later reservation *and every re-lock for every other reservation*
+    blocked until a restart, which in turn killed all pending reservations.
+
+    On timeout we return exit 2. **The worker thread is not killed** — Python has
+    no way to do that — so the runaway flow keeps running to whatever end it
+    reaches. What this buys is that the failure becomes bounded and *visible*:
+    callers get a real answer, the lock is released, and because FLOW_EXECUTOR has
+    a single worker the next flow queues behind the stuck thread rather than
+    driving a second Chromium against the same profile.
+    """
+    loop = asyncio.get_running_loop()
+    async with FLOW_LOCK:
+        set_current_flow(reservation_id)
+        try:
+            fn = functools.partial(run_flow, params, reservation_id, is_relock)
+            return await asyncio.wait_for(
+                loop.run_in_executor(FLOW_EXECUTOR, fn),
+                timeout=settings.flow_timeout_seconds,
+            )
+        except asyncio.TimeoutError:
+            log.error(
+                f"[flow] TIMEOUT after {settings.flow_timeout_seconds}s "
+                f"(reservation {reservation_id}) — abandoning the wait. The worker "
+                "thread cannot be killed and may still be running; subsequent flows "
+                "will queue behind it. Investigate if this repeats."
+            )
+            return 2, None
+        finally:
+            clear_current_flow()
 
 
 def fetch_seat_map(params: RouteParams) -> tuple[list[SeatInfo], list[dict]]:
