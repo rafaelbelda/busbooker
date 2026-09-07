@@ -56,12 +56,24 @@ class Settings(BaseSettings):
     flow_timeout_seconds: int = 240
 
     # ---- scheduler ----
-    # Must stay comfortably BELOW the provider's seat-hold TTL, or each cycle
-    # re-takes a seat that has already been publicly bookable for a while. Logs
-    # showed the hold lapsing at 20.6-21.6 min with the interval at 20, so the
-    # seat was exposed on every cycle. 14 ≈ 70% of the observed TTL; revisit once
-    # the "seat read as FREE at re-lock" warning has produced real data.
-    scheduler_interval: int = 14  # minutes
+    # Must stay below the provider's seat-hold TTL so each cycle REFRESHES a hold
+    # we still have, rather than re-taking a seat that has been publicly bookable
+    # in the meantime. (Re-locking early is fine — a LockSeat POST on a seat we
+    # already hold succeeds and issues a fresh seatUUID; logs show five such
+    # cycles in a row.)
+    #
+    # Choosing the value: at the previous 21 min, lock-to-lock was 20:55-21:50 and
+    # step 3 read our own seat as still held at gaps as tight as 20:33 — so we were
+    # arriving marginally late most cycles. 18 puts lock-to-lock near 18:30, about
+    # two minutes inside the tightest confirmed-held observation, for ~17% more
+    # provider load rather than the ~50% that a 14-minute interval costs.
+    #
+    # The exact TTL is NOT established: the seat map is a cached endpoint that lags
+    # a fresh hold, and the readings conflict (one reservation read "free" at 20:35
+    # while another read "held" at 20:33). No seat was ever actually lost at 21 min.
+    # Treat this as a modest safety margin, not a measurement — and revisit once the
+    # "seat read as FREE at re-lock" warning has produced real data.
+    scheduler_interval: int = 18  # minutes
     # Stop re-locking this many minutes BEFORE departure. mobifacil delists a trip
     # some minutes before it leaves (observed: still listed at T-22min, gone by
     # T-90s), and a re-lock that lands after delisting cannot succeed — it used to
