@@ -57,6 +57,7 @@ def resolve_route_params(
     date: str,
     departure: str,
     seat: str = "",
+    service_id: str = "",
 ) -> RouteParams:
     """Build frozen RouteParams from explicit, user-supplied route values.
 
@@ -78,6 +79,7 @@ def resolve_route_params(
         seat=seat,
         date_formatted=date_formatted,
         search_url=search_url,
+        service_id=service_id,
     )
 
 
@@ -342,6 +344,8 @@ def fetch_seat_map(params: RouteParams) -> tuple[list[SeatInfo], list[dict]]:
         fetch_bus_details,
         fetch_lsservicos,
         filter_trips_by_date,
+        ls_departure,
+        select_trip,
     )
 
     # Use a single client so cookies from the HTML fetch carry over to BusDetails.
@@ -354,14 +358,13 @@ def fetch_seat_map(params: RouteParams) -> tuple[list[SeatInfo], list[dict]]:
         if not lsservicos:
             raise RuntimeError("no more trips for this date")
 
-        def _dep_hour(trip: dict) -> str:
-            saida = trip.get("saida", "")       # "02/06/2026 05:50"
-            return saida.rsplit(" ", 1)[-1] if " " in saida else saida
-
-        matching = next((t for t in lsservicos if _dep_hour(t) == params.departure), None)
+        # service_id when the caller knows it — departure time alone can match the
+        # wrong company's coach and hand back its seat map.
+        matching = select_trip(lsservicos, params.departure, params.service_id)
         if not matching:
-            available = [_dep_hour(t) for t in lsservicos]
-            raise RuntimeError(f"departure {params.departure} not in search results {available}")
+            available = [ls_departure(t) for t in lsservicos]
+            wanted = f"service {params.service_id}" if params.service_id else f"departure {params.departure}"
+            raise RuntimeError(f"{wanted} not in search results {available}")
 
         url = build_bus_details_url(matching, params.date)
         bus_data = fetch_bus_details(url, client=client)

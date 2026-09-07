@@ -71,6 +71,16 @@ class ReservationRequest(BaseModel):
     date: str = Field(examples=["2026-05-28"], description="yyyy-mm-dd")
     departure: str = Field(examples=["00:00"], description="HH:MM (24-hour)")
     seat: str = Field(examples=["00"])
+    service_id: str = Field(
+        default="",
+        examples=["83428"],
+        description=(
+            "mobifacil serviceId of the chosen trip (from POST /search). Strongly "
+            "recommended: without it the server can only match on departure time, "
+            "which is ambiguous when two companies run the same route at the same "
+            "time."
+        ),
+    )
 
     @field_validator("id")
     @classmethod
@@ -119,6 +129,10 @@ class RouteParams(BaseModel):
     seat: str
     date_formatted: str
     search_url: str
+    # mobifacil serviceId identifying the exact coach. Empty for legacy records
+    # created before it was captured, in which case matching falls back to
+    # departure time (ambiguous when two companies share a departure).
+    service_id: str = ""
 
 
 class ReservationRecord(BaseModel):
@@ -130,6 +144,9 @@ class ReservationRecord(BaseModel):
     date: str
     departure: str
     seat: str
+    # The exact coach this reservation belongs to. Empty on records created before
+    # this field existed; those keep matching on departure time.
+    service_id: str = ""
     status: ReservationStatus = ReservationStatus.pending
     exit_code: Optional[int] = None
     created_at: datetime

@@ -35,6 +35,7 @@ import httpx
 
 from ..config import BUS_DETAILS_PATH, settings
 from ..utils.logger import log
+from .seatmap import build_decks, flatten
 
 _UA = (
     "Mozilla/5.0 (Windows NT 10.0; Win64; x64) "
@@ -80,6 +81,52 @@ def filter_trips_by_date(trips: list[dict], date_yyyymmdd: str) -> list[dict]:
     return [t for t in trips if t.get("saida", "").startswith(expected)]
 
 
+def ls_service_id(ls_trip: dict) -> str:
+    """The bare serviceId from an lsServicos entry.
+
+    ``servico`` looks like ``"83428-2026-07-25T09:00-FARE-1"``; the leading number
+    is the serviceId and is what actually identifies a coach.
+    """
+    return str(ls_trip.get("servico", "") or "").split("-", 1)[0].strip()
+
+
+def ls_departure(ls_trip: dict) -> str:
+    """Departure ``HH:MM`` from an entry's ``saida`` ("DD/MM/YYYY HH:MM")."""
+    saida = ls_trip.get("saida", "") or ""
+    return saida.rsplit(" ", 1)[-1] if " " in saida else saida
+
+
+def select_trip(
+    trips: list[dict], departure: str, service_id: str = ""
+) -> Optional[dict]:
+    """Pick the requested trip. ``service_id`` wins whenever it is known.
+
+    Departure time alone does NOT identify a trip: two companies can run the same
+    route at the same time, and the caller picked one of them in the UI. Matching
+    on time meant whichever entry lsServicos happened to list first — so the seat
+    map shown could belong to one coach and the seat get locked on another.
+
+    ``service_id`` is empty only for reservations created before it was recorded,
+    which is why the time-based path survives — with a warning when it is
+    genuinely ambiguous.
+    """
+    if service_id:
+        wanted = str(service_id).strip()
+        for t in trips:
+            if ls_service_id(t) == wanted:
+                return t
+        return None
+
+    matches = [t for t in trips if ls_departure(t) == departure]
+    if len(matches) > 1:
+        log.warning(
+            f"[htmlsearch] {len(matches)} trips depart at {departure} "
+            f"({[t.get('empresa') for t in matches]}) and no service_id was given — "
+            "falling back to the first, which may be the wrong coach"
+        )
+    return matches[0] if matches else None
+
+
 def fetch_lsservicos(
     search_url: str, client: Optional[httpx.Client] = None
 ) -> list[dict]:
@@ -123,134 +170,28 @@ def _parse_lsservicos(html_content: str) -> list[dict]:
 # Seat-map flattening (shared by both search and seats paths)
 # ─────────────────────────────────────────────────────────────────
 
-def _posZ_from(seat: dict, fallback: int) -> float:
-    """Floor index for a seat.
-
-    The empty-row divider count (``fallback``) is AUTHORITATIVE — it is mobifacil's
-    own rule for ``hasSecondFloor`` (``seatMap.some(row => row.length === 0)``) and
-    the one ``build_seat_decks`` uses. The per-seat ``z``/``posZ`` field is only
-    consulted when the map has no divider at all, because production data carries
-    ``z: "0"`` on every seat *including the upper deck*: trusting it collapsed a
-    double-decker into one floor here while the deck grid correctly showed two.
-    """
-    if fallback:
-        return float(fallback)
-    for k in ("z", "posZ"):
-        v = seat.get(k)
-        if v not in (None, ""):
-            try:
-                return float(v)
-            except (TypeError, ValueError):
-                continue
-    return float(fallback)
-
-
 def _seats_from_map(seat_map: list) -> list[dict]:
+    """Flatten seatMap into TripSeat-compatible dicts.
+
+    Same structural knowledge as ``seat.parse_seat_map`` — both are now thin
+    shapers over ``seatmap.flatten``, which is the point: these two used to be
+    independent implementations that drifted apart.
     """
-    Flatten seatMap into TripSeat-compatible dicts.
-
-    Mobifacil's BusDetails encodes seat position in the 2D array structure:
-      outer index n → posX (bus depth, 0=front row)
-      inner index i → posY (cross-section, corridor marker at i=2 has numero=-99)
-    posX and posY are ALWAYS the array indices — the 2D structure is the coordinate
-    system. Empty rows [] are floor separators; tracked as posZ so splitFloors()
-    can group decks correctly. Non-numeric labels (WC, ES) and -99 are excluded.
-    """
-    seats: list[dict] = []
-    floor = 0
-    for n, row in enumerate(seat_map):
-        if not isinstance(row, list):
-            continue
-        if len(row) == 0:
-            floor += 1
-            continue
-        for i, seat in enumerate(row):
-            if not isinstance(seat, dict):
-                continue
-            raw = seat.get("numero", -99)
-            if raw == -99 or str(raw) == "-99":
-                continue
-            num_str = str(raw).strip()
-            try:
-                num_str = str(int(float(num_str)))  # normalise "5.0" → "5", rejects WC/ES
-            except (ValueError, OverflowError):
-                continue
-            seats.append({
-                "numero": num_str,
-                "disponivel": bool(seat.get("disponivel", False)),
-                "posX": float(n),
-                "posY": float(i),
-                "posZ": _posZ_from(seat, floor),
-            })
-    return seats
-
-
-def _classify_cell(numero, i: int) -> tuple[str, str]:
-    """Return ``(kind, label)`` for a raw seatMap cell, mirroring mobifacil's own
-    render classes: hall (aisle) when ``i==2 || numero=='ES' || numero==-99``,
-    ``bathroom`` for WC, otherwise a numbered seat. ES/GE are labelled landmarks."""
-    s = str(numero).strip()
-    if s == "-99":
-        return "aisle", ""
-    if s == "WC":
-        return "bathroom", "WC"
-    if s in ("ES", "GE"):
-        return "marker", s
-    if i == 2:                       # central column is always the aisle
-        return "aisle", ""
-    return "seat", s                 # numbered, bookable
+    return [
+        {
+            "numero": s.number,
+            "disponivel": s.available,
+            "posX": float(s.depth),
+            "posY": float(s.cross),
+            "posZ": float(s.deck),
+        }
+        for s in flatten(seat_map)
+    ]
 
 
 def build_seat_decks(seat_map: list) -> list[dict]:
-    """Convert mobifacil's raw 2D seatMap into decks→rows→cells, EXACTLY matching
-    how mobifacil renders it — so the frontend never has to guess aisle/floor layout.
-
-    - Every cell keeps its grid slot (aisles and landmarks included) so columns stay
-      aligned, instead of dropping -99/WC/ES/GE the way the flat seat list does.
-    - Decks are split on EMPTY rows — mobifacil's ``hasSecondFloor`` rule
-      (``seatMap.some(row => row.length === 0)``). The per-seat ``z`` field is
-      deliberately ignored: it is unreliable (all "0" even on the upper deck).
-    - Floor order matches mobifacil's FloorSwitch: the segment AFTER the divider is
-      Primeiro Piso (FLOOR 1, shown first); the segment BEFORE it is Segundo Piso.
-    """
-    segments: list[list] = []
-    current: list = []
-    for row in seat_map:
-        if not isinstance(row, list):
-            continue
-        if len(row) == 0:            # divider between decks
-            if current:
-                segments.append(current)
-                current = []
-            continue
-        current.append(row)
-    if current:
-        segments.append(current)
-    if not segments:
-        return []
-
-    def _rows(segment: list) -> list[list[dict]]:
-        out: list[list[dict]] = []
-        for row in segment:
-            cells: list[dict] = []
-            for i, seat in enumerate(row):
-                if not isinstance(seat, dict):
-                    continue
-                kind, label = _classify_cell(seat.get("numero", -99), i)
-                cells.append({
-                    "kind": kind,
-                    "number": label,
-                    "available": bool(seat.get("disponivel", False)),
-                    "idoso": bool(seat.get("idoso", False)),
-                })
-            out.append(cells)
-        return out
-
-    decks = [_rows(seg) for seg in segments]
-    # After-divider segment first (Primeiro Piso) when the coach is double-decker.
-    if len(decks) > 1:
-        decks = decks[::-1]
-    return [{"label": f"FLOOR {idx + 1}", "rows": rows} for idx, rows in enumerate(decks)]
+    """Decks → rows → cells for the frontend picker (see ``seatmap.build_decks``)."""
+    return build_decks(seat_map)
 
 
 # ─────────────────────────────────────────────────────────────────

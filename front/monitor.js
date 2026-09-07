@@ -240,6 +240,7 @@
         kv("ID", el("span", { class: "v wrap", text: r.id })),
         kv("Route", el("span", { class: "v", text: U.cityName(r.origin_id) + " → " + U.cityName(r.destination_id) })),
         kv("Date · dep (SP)", el("span", { class: "v", text: r.date + " · " + r.departure })),
+        kv("Service", el("span", { class: "v", text: r.service_id || "— (matched by time)" })),
         kv("Departure (local)", el("span", { class: "v", text: r.departure_datetime ? U.fmtLocal(r.departure_datetime) : "— set on lock" })),
         kv("Exit code", el("span", { class: "v", text: r.exit_code == null ? "—" : String(r.exit_code) })),
         kv("Created", el("span", { class: "v", text: U.fmtLocal(r.created_at) })),

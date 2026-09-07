@@ -658,7 +658,7 @@
     try {
       const seatsRes = await BB.getSeats({
         origin_id: s.origin_id, destination_id: s.destination_id,
-        date: s.date, departure: t.departure,
+        date: s.date, departure: t.departure, service_id: t.service_id,
       });
       // `decks` is the exact mobifacil grid (preferred render); `seats` stays the
       // flat list for counts and the legacy fallback.
@@ -743,6 +743,9 @@
       id: rid,
       origin_id: s.origin_id, destination_id: s.destination_id,
       date: s.date, departure: state.trip.departure, seat: state.seat,
+      // The user picked THIS coach in the trip list; send its id so the backend
+      // locks a seat on it rather than on whichever trip shares the departure time.
+      service_id: state.trip.service_id || "",
     });
     post.catch((e) => { postError = e; })
         .then(() => { state.reserving = false; setBrowserBusy(false); });

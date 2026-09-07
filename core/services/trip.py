@@ -26,6 +26,8 @@ from .htmlsearch import (
     _parse_lsservicos,
     build_bus_details_url,
     filter_trips_by_date,
+    ls_departure,
+    select_trip,
 )
 
 
@@ -104,7 +106,19 @@ def _parse_bus_details(data: dict, params: RouteParams) -> Optional[dict]:
         return None
     trip = trips[0]
     dep = trip.get("departureHour", "")
-    if params.departure not in dep:
+
+    # Verify identity. When the caller knows the serviceId, that is the check that
+    # matters: departure time alone cannot tell two companies' coaches apart, and
+    # accepting the wrong one here would lock a seat on a bus the user never chose.
+    resolved_sid = str(trip.get("serviceId", "") or "").strip()
+    if params.service_id:
+        if resolved_sid and resolved_sid != str(params.service_id).strip():
+            log.warning(
+                f"[step 2] BusDetails returned service {resolved_sid} but we asked "
+                f"for {params.service_id} — rejecting"
+            )
+            return None
+    elif params.departure not in dep:
         return None
 
     # FIX (bug 3): the original used trip["serviceId"]/["fareId"]/["empresaId"]
@@ -210,6 +224,13 @@ def _attach_bus_details_listener(
 
 
 def _click_trip_card(page: Page, params: RouteParams) -> bool:
+    """Click the trip card for this departure.
+
+    NOTE: the rendered cards expose departure time, not serviceId, so this
+    fallback path cannot distinguish two companies departing at the same minute.
+    ``_parse_bus_details`` re-checks the serviceId of whatever it lands on and
+    rejects a mismatch, so a wrong card fails loudly instead of booking silently.
+    """
     stochastic_idle(page, "pre_trip_click")
     cards = page.locator(".listTripsCard")
     count = cards.count()
@@ -295,12 +316,6 @@ def _navigate_via_url(page: Page, params: RouteParams) -> None:
     stochastic_idle(page, "post_bus_details_nav")
 
 
-def _dep_hour(ls_trip: dict) -> str:
-    """Departure HH:MM from an lsServicos entry's ``saida`` ("DD/MM/YYYY HH:MM")."""
-    saida = ls_trip.get("saida", "")
-    return saida.rsplit(" ", 1)[-1] if " " in saida else saida
-
-
 def _resolve_trip_direct(page: Page, params: RouteParams) -> Optional[dict]:
     """Resolve the trip WITHOUT a UI click or XHR-intercept race.
 
@@ -345,11 +360,15 @@ def _resolve_trip_direct(page: Page, params: RouteParams) -> Optional[dict]:
             f"next day's departures ({len(trips)} trip(s) listed, none on the requested date)"
         )
 
-    matching = next((t for t in dated if _dep_hour(t) == params.departure), None)
+    matching = select_trip(dated, params.departure, params.service_id)
     if not matching:
-        available = [_dep_hour(t) for t in dated]
+        available = [ls_departure(t) for t in dated]
+        wanted = (
+            f"service {params.service_id} ({params.departure})"
+            if params.service_id else f"departure {params.departure}"
+        )
         raise TripNotOffered(
-            f"departure {params.departure} is no longer offered on {params.date} — "
+            f"{wanted} is no longer offered on {params.date} — "
             f"provider now lists {available}"
         )
 

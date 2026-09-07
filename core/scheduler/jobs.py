@@ -121,6 +121,7 @@ async def _relock_job(reservation_id: str) -> None:
         date=record.date,
         departure=record.departure,
         seat=record.seat,
+        service_id=record.service_id,
     )
 
     # (3) Run the flow — serialised, time-bounded and observable.

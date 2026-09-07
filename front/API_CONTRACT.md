@@ -122,7 +122,7 @@ Status codes and exact body shapes. `→` denotes the success body.
 | Method | Path | Purpose | Success | Notes |
 |---|---|---|---|---|
 | GET | `/health` | liveness | 200 → `HealthResponse` | fast |
-| GET | `/seats` | live seat map for a route | 200 → `SeatsResponse` | ~2–5 s; **required** query params (`origin_id`, `destination_id`, `date`, `departure`) |
+| GET | `/seats` | live seat map for a route | 200 → `SeatsResponse` | ~2–5 s; **required** query params (`origin_id`, `destination_id`, `date`, `departure`); optional but **recommended** `service_id` — without it the map is chosen by departure time alone and may be another company's coach |
 | POST | `/search` | resolve trips for a pasted mobifacil URL | 200 → `SearchResponse` | ~2 s; 422 on bad URL |
 | POST | `/reservations` | lock a seat now + start re-lock cycle | **201** → `ReservationRecord` | browser-driven; see status semantics below |
 | GET | `/reservations/{id}` | reservation detail | 200 → `ReservationRecord` | 404 if unknown |
@@ -300,6 +300,11 @@ next fire time.)
   waiting for the flow. Must match `^[A-Za-z0-9_-]{1,64}$` (422 otherwise) and must
   not already exist (**409** `"reservation id already exists"`). Omit it and the
   server generates one.
+  **Strongly recommended:** `service_id` — the `service_id` of the trip the user
+  picked, straight from `POST /search`. Departure time does **not** identify a trip:
+  two companies can run the same route at the same minute, and without this the
+  server matches on time alone and may lock a seat on the other one. Omitting it is
+  accepted (for older clients) but logs a warning.
 - `POST /search` — `{ "url": "<full mobifacil passagem-de-onibus URL>" }`. Paste
   the URL **exactly** as copied (it contains `dd-mm-yyyy` date + `origin`/
   `destination`/`isStudent`/`isPCD` query params; the backend parses it). Only

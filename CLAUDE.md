@@ -65,6 +65,8 @@ nginx (`nginx.conf`) proxies all API paths to `:8771` and serves `front/` for ev
 - **`api/admin.py`** — `/admin/*` endpoints, HTTP Basic Auth
 - **`services/flow.py`** — `run_flow()`: the 7-step orchestrator (search → trip dict → seat check → lock → checkout → hold → confirm). This is where browser automation begins.
 - **`services/trip.py`** — Opens the search page; intercepts the BusDetails XHR to extract the trip dict
+- **`services/seatmap.py`** — The single owner of mobifacil's `seatMap` format: seat-number
+  normalisation, lookup, flattening and the deck grid. Everything else shapes its output.
 - **`services/seat.py`** — Checks availability, locks seat via UI click or direct POST
 - **`services/checkout.py`** — Navigates checkout, confirms lock persists
 - **`services/browser.py`** — Playwright context lifecycle, anti-bot evasion
@@ -109,6 +111,10 @@ trip back.
 ### Data Model
 
 `ReservationRecord` (Pydantic, stored as JSON in SQLite):
+- `service_id`: mobifacil serviceId of the exact coach. **This is what identifies a
+  trip** — departure time does not, since two companies can run the same route at the
+  same minute. Empty on records created before this field existed; those fall back to
+  departure-time matching (`services/htmlsearch.py::select_trip`).
 - `status`: `pending | locked | failed | cancelled | expired`
 - `departure_datetime`: computed from date + departure time in São Paulo timezone
 - `is_expired`: computed — departure has passed

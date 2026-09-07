@@ -94,6 +94,14 @@ async def get_seats(
     destination_id: str = Query(),
     date: str = Query(description="yyyy-mm-dd"),
     departure: str = Query(description="HH:MM departure to match"),
+    service_id: str = Query(
+        default="",
+        description=(
+            "mobifacil serviceId of the trip (from POST /search). Strongly "
+            "recommended: without it the seat map is chosen by departure time "
+            "alone, which can return another company's coach."
+        ),
+    ),
 ) -> SeatsResponse:
     # All route values are required query params — there are no server defaults.
     # Seat-map reads are not seat-specific, so no seat is needed here.
@@ -109,6 +117,7 @@ async def get_seats(
         destination_id=destination_id,
         date=date,
         departure=departure,
+        service_id=service_id.strip(),
     )
     loop = asyncio.get_running_loop()
     try:
@@ -214,7 +223,17 @@ async def create_reservation(
         date=req.date,
         departure=req.departure,
         seat=req.seat,
+        service_id=req.service_id,
     )
+    if not req.service_id:
+        # Not rejected: existing clients and the /docs form omit it. But without it
+        # the booking is matched on departure time alone and can land on another
+        # company's coach at the same minute.
+        log.warning(
+            f"[/reservations] no service_id supplied for {params.origin_id}->"
+            f"{params.destination_id} {params.date} {params.departure} — falling back "
+            "to departure-time matching, which is ambiguous"
+        )
     now = datetime.now(timezone.utc)
     dep_dt_check = compute_departure_datetime(req.date, req.departure)
     hours_ahead = (dep_dt_check - now).total_seconds() / 3600
@@ -229,6 +248,7 @@ async def create_reservation(
         date=params.date,
         departure=params.departure,
         seat=params.seat,
+        service_id=params.service_id,
         status=ReservationStatus.pending,
         created_at=now,
         updated_at=now,
@@ -244,7 +264,8 @@ async def create_reservation(
     log.info(
         f"[audit] reservation create id={record.id} "
         f"route={params.origin_id}->{params.destination_id} date={params.date} "
-        f"departure={params.departure} seat={params.seat} {_client(request)}"
+        f"departure={params.departure} service={params.service_id or '-'} "
+        f"seat={params.seat} {_client(request)}"
     )
 
     try:

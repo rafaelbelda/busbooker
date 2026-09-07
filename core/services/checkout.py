@@ -19,6 +19,7 @@ from ..config import BUS_DETAILS_PATH, CHECKOUT_PATH, settings
 from ..models.schemas import RouteParams
 from ..utils.logger import log
 from .browser import check_detection, jitter, retry
+from .seatmap import find_seat
 
 
 # ─────────────────────────────────────────────────────────────────
@@ -92,22 +93,14 @@ def _confirm_via_api(page: Page, trip: dict, params: RouteParams) -> Optional[bo
         return None
     trips = data.get("details", {}).get("trip", [])
     seat_map = trips[0].get("seatMap", []) if trips else []
-    target_norm = params.seat.strip().lstrip("0") or "0"
-    for row in seat_map:
-        if not isinstance(row, list):
-            continue
-        for seat in row:
-            if not isinstance(seat, dict):
-                continue
-            raw = str(seat.get("numero", "")).strip()
-            # seatMap labels are zero-padded ("05"); the request seat is normalised
-            # ("5"). Match on both forms so the recheck finds the seat (exact-match
-            # would silently miss it and fall through to "assume locked").
-            if raw == params.seat.strip() or (raw.lstrip("0") or "0") == target_norm:
-                avail = seat.get("disponivel", True)
-                log.info(f"[step 7] recheck seat '{params.seat}': disponivel={avail}")
-                return not avail
-    return None
+    # Padded/unpadded matching lives in seatmap.seat_matches — an exact-string
+    # compare here silently missed the seat and fell through to "assume locked".
+    cell = find_seat(seat_map, params.seat)
+    if cell is None:
+        return None
+    avail = cell.get("disponivel", True)
+    log.info(f"[step 7] recheck seat '{params.seat}': disponivel={avail}")
+    return not avail
 
 
 def corroborate_lock(page: Page, trip: dict, params: RouteParams) -> Optional[bool]:

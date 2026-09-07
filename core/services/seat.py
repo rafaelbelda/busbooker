@@ -20,129 +20,57 @@ from ..config import LOCK_SEAT_PATH, settings
 from ..models.schemas import RouteParams, SeatInfo
 from ..utils.logger import log
 from .browser import jitter, retry
+from .seatmap import find_seat, flatten, raw_label
 
 
 # ─────────────────────────────────────────────────────────────────
 # Step 3 — Availability
 # ─────────────────────────────────────────────────────────────────
-def _iter_seats(seat_map: list):
-    """Yield every dict seat in the map, skipping non-list rows / non-dict cells."""
-    for row in seat_map:
-        if not isinstance(row, list):
-            continue
-        for seat in row:
-            # FIX (bug B): original check_seat_availability called seat.get()
-            # without guarding that the cell is a dict, unlike the coordinate
-            # extractor — a non-dict cell raised AttributeError.
-            if isinstance(seat, dict):
-                yield seat
-
-
-def _posZ_from(seat: dict, fallback: int) -> float:
-    """Floor index for a seat.
-
-    The empty-row divider count (``fallback``) is AUTHORITATIVE — it is mobifacil's
-    own rule for ``hasSecondFloor`` (``seatMap.some(row => row.length === 0)``) and
-    the one ``build_seat_decks`` uses. The per-seat ``z``/``posZ`` field is only
-    consulted when the map has no divider at all, because production data carries
-    ``z: "0"`` on every seat *including the upper deck*: trusting it collapsed a
-    double-decker into one floor here while the deck grid correctly showed two.
-    """
-    if fallback:
-        return float(fallback)
-    for k in ("z", "posZ"):
-        v = seat.get(k)
-        if v not in (None, ""):
-            try:
-                return float(v)
-            except (TypeError, ValueError):
-                continue
-    return float(fallback)
-
-
 def parse_seat_map(seat_map: list) -> list[SeatInfo]:
-    """Flatten the seatMap into a serialisable list for the /seats endpoint.
+    """Flatten the seatMap for the /seats endpoint.
 
-    Mobifacil's BusDetails encodes seat position in the 2D array structure:
-      outer index n → posX (bus depth, 0=front row)
-      inner index i → posY (cross-section, 0=left-window … 4=right-window, 2=corridor)
-    posX and posY are ALWAYS the array indices — the 2D structure itself is the
-    coordinate system. Trusting any "x"/"y" field on the seat object would break
-    layout if BusDetails includes unrelated metadata under those names.
-    Empty rows (len==0) are floor separators; we track the floor index and expose
-    it as posZ so splitFloors() can group decks correctly.
-
-    Non-numeric labels (WC, ES) and corridor markers (-99) are excluded.
+    Structure knowledge lives in ``seatmap``; this only shapes it into SeatInfo.
+    ``posX``/``posY`` are the array indices (the 2D structure IS the coordinate
+    system) and ``posZ`` is the empty-row divider count.
     """
-    seats: list[SeatInfo] = []
-    floor = 0
-    for n, row in enumerate(seat_map):
-        if not isinstance(row, list):
-            continue
-        if len(row) == 0:
-            floor += 1
-            continue
-        for i, seat in enumerate(row):
-            if not isinstance(seat, dict):
-                continue
-            raw = seat.get("numero", -99)
-            if raw == -99 or str(raw) == "-99":
-                continue
-            num_str = str(raw).strip()
-            try:
-                # int(float(...)) handles both "5" and "5.0" (BusDetails may
-                # serialise integers as floats); normalise to a clean int string.
-                num_str = str(int(float(num_str)))
-            except (ValueError, OverflowError):
-                continue  # rejects WC, ES, and any other non-numeric label
-            seats.append(SeatInfo(
-                number=num_str,
-                available=bool(seat.get("disponivel", False)),
-                posX=float(n),               # outer index = bus depth (front→back)
-                posY=float(i),               # inner index = cross-section (left→right)
-                posZ=_posZ_from(seat, floor),
-            ))
-    return seats
+    return [
+        SeatInfo(
+            number=s.number,
+            available=s.available,
+            posX=float(s.depth),
+            posY=float(s.cross),
+            posZ=float(s.deck),
+        )
+        for s in flatten(seat_map)
+    ]
 
 
 def seat_is_locked(seat_map: list, params: RouteParams) -> bool:
-    """Return True iff the seat exists, is not an idoso seat, and is currently locked."""
-    target_norm = params.seat.strip().lstrip("0") or "0"
-    for seat in _iter_seats(seat_map):
-        raw = seat.get("numero", -99)
-        if raw == -99 or str(raw) == "-99":
-            continue
-        num_norm = str(raw).strip().lstrip("0") or "0"
-        if num_norm == target_norm or str(raw).strip() == params.seat.strip():
-            if seat.get("idoso"):
-                return False
-            return not bool(seat.get("disponivel", True))
-    return False
+    """True iff the seat exists, is not an idoso seat, and is currently held."""
+    cell = find_seat(seat_map, params.seat)
+    if cell is None or cell.get("idoso"):
+        return False
+    return not bool(cell.get("disponivel", True))
 
 
 def check_seat_availability(seat_map: list, params: RouteParams) -> bool:
     target = params.seat
-    target_norm = target.strip().lstrip("0") or "0"
-    for seat in _iter_seats(seat_map):
-        raw = seat.get("numero", -99)
-        if raw == -99 or str(raw) == "-99":
-            continue
-        num_norm = str(raw).strip().lstrip("0") or "0"
-        if num_norm == target_norm or str(raw).strip() == target:
-            # Priority (idoso) seats are reservable only via attendance — mobifacil's
-            # own UI blocks them client-side, and a LockSeat POST would be refused.
-            # Treat as unavailable so we fail fast with a clear reason.
-            if seat.get("idoso"):
-                log.warning(
-                    f"[step 3] seat '{target}' is a priority/idoso seat — "
-                    "reservable only via attendance, not bookable here"
-                )
-                return False
-            avail = seat.get("disponivel", False)
-            log.info(f"[step 3] seat '{target}' → disponivel={avail}")
-            return bool(avail)
-    log.warning(f"[step 3] seat '{target}' not found in seatMap")
-    return False
+    cell = find_seat(seat_map, target)
+    if cell is None:
+        log.warning(f"[step 3] seat '{target}' not found in seatMap")
+        return False
+    # Priority (idoso) seats are reservable only via attendance — mobifacil's own
+    # UI blocks them client-side and a LockSeat POST would be refused. Treat as
+    # unavailable so we fail fast with a clear reason.
+    if cell.get("idoso"):
+        log.warning(
+            f"[step 3] seat '{target}' is a priority/idoso seat — "
+            "reservable only via attendance, not bookable here"
+        )
+        return False
+    avail = cell.get("disponivel", False)
+    log.info(f"[step 3] seat '{target}' → disponivel={avail}")
+    return bool(avail)
 
 
 # ─────────────────────────────────────────────────────────────────
@@ -178,23 +106,13 @@ def _info_connection(trip: dict) -> str:
 
 
 def _resolve_seat_label(trip: dict, requested: str) -> str:
+    """The seatMap's RAW label for the requested seat ("05", not our "5").
+
+    Mobifacil's LockSeat sends ``seat = t.numero``, so the padded form is what the
+    server matches on.
     """
-    Mobifacil's LockSeat sends ``seat = t.numero`` — the seatMap's RAW label,
-    which is zero-padded ("05"), not the normalised "5" our /seats endpoint
-    exposes (parse_seat_map strips the leading zero). Map the requested seat back
-    to the exact ``numero`` string from the seatMap so the server matches it;
-    fall back to the requested value if the seat isn't found.
-    """
-    target = requested.strip().lstrip("0") or "0"
     seat_map = trip.get("seatMap") or trip.get("seatsWithPrice") or []
-    for seat in _iter_seats(seat_map):
-        raw = seat.get("numero")
-        if raw in (-99, "-99", None):
-            continue
-        num = str(raw).strip()
-        if num == requested.strip() or (num.lstrip("0") or "0") == target:
-            return num
-    return requested.strip()
+    return raw_label(seat_map, requested)
 
 
 def _build_lock_payload(trip: dict, params: RouteParams) -> dict:

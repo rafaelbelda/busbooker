@@ -108,6 +108,9 @@
       const q = new URLSearchParams({
         origin_id: p.origin_id, destination_id: p.destination_id, date: p.date, departure: p.departure,
       });
+      // Identifies the exact coach. Without it the backend falls back to matching
+      // on departure time, which can return a different company's seat map.
+      if (p.service_id) q.set("service_id", p.service_id);
       const r = await http("GET", "/seats?" + q.toString(), { timeout: HTTP_TIMEOUT });
       const bp = backpressure(r.status, r.retryAfter);
       if (bp) throw bp;
